@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: notification-service
+  mongodb:
+    uri: ${NOTIFICATION_MONGODB_URI:mongodb://localhost:27017/ecommerce_notification}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: notification-service
+      auto-offset-reset: earliest
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.neora.events
+        spring.json.value.default.type: com.neora.events.OrderEvent
+    listener:
+      missing-topics-fatal: false
+server:
+  port: ${PORT:8085}
+app:
+  jwt:
+    secret: ${JWT_SECRET:change-this-development-secret-32-chars}
+    ttl: ${JWT_TTL:PT30M}
+  kafka:
+    order-topic: ${ORDER_TOPIC:order.lifecycle.v1}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

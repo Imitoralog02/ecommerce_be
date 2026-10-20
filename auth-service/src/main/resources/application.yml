@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: auth-service
+  mongodb:
+    uri: ${AUTH_MONGODB_URI:mongodb://localhost:27017/ecommerce_auth}
+  data:
+    mongodb:
+      auto-index-creation: true
+
+server:
+  port: ${PORT:8081}
+
+app:
+  auth:
+    refresh-ttl: ${AUTH_REFRESH_TTL:P30D}
+  jwt:
+    secret: ${JWT_SECRET:change-this-development-secret-32-chars}
+    ttl: ${JWT_TTL:PT30M}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

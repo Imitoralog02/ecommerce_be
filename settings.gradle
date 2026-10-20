@@ -1,0 +1,11 @@
+rootProject.name = 'ecommerce-platform'
+
+include 'shared-kernel'
+include 'shared-events'
+include 'gateway-service'
+include 'auth-service'
+include 'catalog-service'
+include 'cart-service'
+include 'order-service'
+include 'notification-service'
+include 'customer-service'

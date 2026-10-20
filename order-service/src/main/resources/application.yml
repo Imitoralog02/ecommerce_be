@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: order-service
+  mongodb:
+    uri: ${ORDER_MONGODB_URI:mongodb://localhost:27017/ecommerce_order}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    admin:
+      fail-fast: false
+server:
+  port: ${PORT:8084}
+services:
+  cart-url: ${CART_URL:http://localhost:8083}
+  catalog-url: ${CATALOG_URL:http://localhost:8082}
+app:
+  internal-api-key: ${INTERNAL_API_KEY:change-this-development-internal-key-32-chars}
+  inventory:
+    poll-ms: ${ORDER_INVENTORY_POLL_MS:5000}
+  jwt:
+    secret: ${JWT_SECRET:change-this-development-secret-32-chars}
+    ttl: ${JWT_TTL:PT30M}
+  kafka:
+    order-topic: ${ORDER_TOPIC:order.lifecycle.v1}
+    outbox-poll-ms: ${ORDER_OUTBOX_POLL_MS:5000}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
