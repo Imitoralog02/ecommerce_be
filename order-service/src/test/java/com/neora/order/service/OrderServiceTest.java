@@ -51,7 +51,7 @@ class OrderServiceTest {
         Order saved = new Order(first.id(), "user-1", first.status(), first.inventoryState(), first.items(), first.subtotal(),
                 first.shippingFee(), first.discount(), first.total(), first.shippingType(), first.paymentType(),
                 first.recipientName(), first.phone(), first.addressLine(), OrderIdempotency.fingerprint(request),
-                null, null, null, first.createdAt(), first.updatedAt());
+                null, null, null, null, first.createdAt(), first.updatedAt());
         when(orders.findById(orderId)).thenReturn(Optional.of(saved));
         var repeated = service.create("user-1", "jwt", "checkout-12345678", request);
 
@@ -71,7 +71,7 @@ class OrderServiceTest {
                 java.util.List.of(), java.math.BigDecimal.ONE, java.math.BigDecimal.ZERO,
                 java.math.BigDecimal.ZERO, java.math.BigDecimal.ONE, "STANDARD", "CASH_ON_DELIVERY",
                 "Nguyễn An", "0908123456", "12 Nguyễn Huệ", OrderIdempotency.fingerprint(original),
-                null, null, null, java.time.Instant.now(), java.time.Instant.now());
+                null, null, null, null, java.time.Instant.now(), java.time.Instant.now());
         when(orders.findById(id)).thenReturn(Optional.of(previous));
 
         CreateOrderRequest changed = new CreateOrderRequest("EXPRESS", "CASH_ON_DELIVERY", "Nguyễn An",

@@ -11,6 +11,8 @@ spring:
       port: ${REDIS_PORT:6379}
 
 app:
+  catalog:
+    sync-legacy-demo: ${CATALOG_SYNC_LEGACY_DEMO:false}
   internal-api-key: ${INTERNAL_API_KEY:change-this-development-internal-key-32-chars}
   inventory:
     demo-seed-quantity: ${INVENTORY_DEMO_SEED_QUANTITY:20}

@@ -34,7 +34,7 @@ class OrderEventPublisherTest {
         Order order = new Order("ord_123", "user-1", OrderStatus.CONFIRMED, InventoryState.RESERVED, List.of(),
                 BigDecimal.valueOf(459000), BigDecimal.valueOf(30000), BigDecimal.ZERO,
                 BigDecimal.valueOf(489000), "EXPRESS", "CASH_ON_DELIVERY", "Nguyễn An",
-                "0908123456", "12 Nguyễn Huệ", "fingerprint", null, null, null, createdAt, createdAt);
+                "0908123456", "12 Nguyễn Huệ", "fingerprint", null, null, null, null, createdAt, createdAt);
         when(orders.findTop100ByInventoryStateAndEventPublishedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED))
                 .thenReturn(List.of(order));
         when(kafka.send(anyString(), anyString(), any(OrderEvent.class)))
@@ -56,7 +56,7 @@ class OrderEventPublisherTest {
         Order order = new Order("ord_123", "user-1", OrderStatus.CONFIRMED, InventoryState.RESERVED, List.of(),
                 BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ONE,
                 "STANDARD", "CASH_ON_DELIVERY", "Nguyễn An", "0908123456", "12 Nguyễn Huệ",
-                "fingerprint", null, null, null, now, now);
+                "fingerprint", null, null, null, null, now, now);
         when(orders.findTop100ByInventoryStateAndEventPublishedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED))
                 .thenReturn(List.of(order));
         when(kafka.send(anyString(), anyString(), any(OrderEvent.class)))
@@ -65,5 +65,27 @@ class OrderEventPublisherTest {
         new OrderEventPublisher(kafka, orders, mongo, "order.lifecycle.v1").publishPending();
 
         verifyNoInteractions(mongo);
+    }
+
+    @Test
+    void cancelledOrderPublishesStableCancellationEvent() {
+        Instant now = Instant.parse("2026-10-21T00:00:00Z");
+        Order order = new Order("ord_123", "user-1", OrderStatus.CANCELLED, InventoryState.RELEASED, List.of(),
+                BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ONE,
+                "STANDARD", "CASH_ON_DELIVERY", "Nguyễn An", "0908123456", "12 Nguyễn Huệ",
+                "fingerprint", null, null, null, null, now, now);
+        when(orders.findTop100ByStatusAndRequestFingerprintNotNullAndCancelEventPublishedAtIsNullOrderByUpdatedAtAsc(OrderStatus.CANCELLED))
+                .thenReturn(List.of(order));
+        when(kafka.send(anyString(), anyString(), any(OrderEvent.class)))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        new OrderEventPublisher(kafka, orders, mongo, "order.lifecycle.v1").publishPending();
+
+        ArgumentCaptor<OrderEvent> event = ArgumentCaptor.forClass(OrderEvent.class);
+        verify(kafka).send(eq("order.lifecycle.v1"), eq("ord_123"), event.capture());
+        assertThat(event.getValue().eventId()).isEqualTo("ORDER_CANCELLED:ord_123");
+        assertThat(event.getValue().status()).isEqualTo("CANCELLED");
+        verify(mongo).updateFirst(any(org.springframework.data.mongodb.core.query.Query.class),
+                any(org.springframework.data.mongodb.core.query.Update.class), eq(Order.class));
     }
 }

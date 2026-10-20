@@ -5,6 +5,7 @@ import com.neora.order.dto.OrderResponse;
 import com.neora.order.dto.OrderQuoteRequest;
 import com.neora.order.dto.OrderQuoteResponse;
 import com.neora.order.service.OrderService;
+import com.neora.order.service.OrderCancellationService;
 import com.neora.shared.security.AuthenticatedUser;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -18,7 +19,11 @@ import java.util.List;
 @RequestMapping("/api/v1/orders")
 public class OrderController {
     private final OrderService orders;
-    public OrderController(OrderService orders) { this.orders = orders; }
+    private final OrderCancellationService cancellations;
+    public OrderController(OrderService orders, OrderCancellationService cancellations) {
+        this.orders = orders;
+        this.cancellations = cancellations;
+    }
     @PostMapping("/quote")
     public OrderQuoteResponse quote(Authentication authentication, @Valid @RequestBody OrderQuoteRequest request) {
         return orders.quote(authentication.getCredentials().toString(), request);
@@ -34,5 +39,9 @@ public class OrderController {
     }
     @GetMapping("/{id}") public OrderResponse get(@AuthenticationPrincipal AuthenticatedUser user, @PathVariable String id) {
         return orders.get(user.id(), id);
+    }
+    @PatchMapping("/{id}/cancel")
+    public OrderResponse cancel(@AuthenticationPrincipal AuthenticatedUser user, @PathVariable String id) {
+        return cancellations.cancel(user.id(), id);
     }
 }

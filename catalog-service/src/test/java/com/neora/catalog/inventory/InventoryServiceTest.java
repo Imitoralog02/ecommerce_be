@@ -75,10 +75,11 @@ class InventoryServiceTest {
     }
 
     @Test
-    void invalidVariantDoesNotTouchStock() {
+    void invalidVariantReleasesAnyPriorReservationForSameOrder() {
         assertThatThrownBy(() -> inventory.reserve(ORDER_ID,
                 List.of(new InventoryService.Line("product-1", "XL", "Đen", 1))))
                 .isInstanceOf(IllegalArgumentException.class);
-        verifyNoInteractions(mongo);
+        verify(mongo).updateFirst(any(Query.class), any(Update.class), eq(InventoryVariant.class));
+        verify(mongo, never()).findAndModify(any(Query.class), any(Update.class), eq(InventoryVariant.class));
     }
 }

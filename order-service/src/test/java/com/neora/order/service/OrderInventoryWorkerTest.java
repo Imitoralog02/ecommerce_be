@@ -5,6 +5,7 @@ import com.neora.order.model.Order;
 import com.neora.order.model.OrderItem;
 import com.neora.order.model.OrderStatus;
 import com.neora.order.repository.OrderRepository;
+import com.mongodb.client.result.UpdateResult;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Query;
@@ -17,6 +18,7 @@ import org.springframework.web.client.RestClient;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -40,6 +42,8 @@ class OrderInventoryWorkerTest {
         when(orders.findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED))
                 .thenReturn(List.of());
         when(mongo.findAndModify(any(Query.class), any(Update.class), eq(Order.class))).thenReturn(pending);
+        when(mongo.updateFirst(any(Query.class), any(Update.class), eq(Order.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
         server.expect(requestTo("http://catalog/internal/inventory/reservations/" + ID))
                 .andExpect(method(HttpMethod.POST)).andRespond(withNoContent());
 
@@ -100,6 +104,78 @@ class OrderInventoryWorkerTest {
     }
 
     @Test
+    void cancelledOrderReleasesReservedStock() {
+        OrderRepository orders = mock(OrderRepository.class);
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        when(orders.findTop100ByInventoryStateOrderByCreatedAtAsc(InventoryState.PENDING)).thenReturn(List.of());
+        when(orders.findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED))
+                .thenReturn(List.of());
+        when(orders.findTop100ByInventoryStateOrderByCreatedAtAsc(InventoryState.RELEASE_PENDING))
+                .thenReturn(List.of(order(InventoryState.RELEASE_PENDING, OrderStatus.CANCELLED)));
+        server.expect(requestTo("http://catalog/internal/inventory/reservations/" + ID + "/release"))
+                .andExpect(method(HttpMethod.POST)).andRespond(withNoContent());
+
+        new OrderInventoryWorker(orders, mongo, builder, "http://catalog", "http://cart", "secret".repeat(6))
+                .reconcile();
+
+        var update = org.mockito.ArgumentCaptor.forClass(Update.class);
+        verify(mongo).updateFirst(any(Query.class), update.capture(), eq(Order.class));
+        assertThat(update.getValue().getUpdateObject().toString()).contains("RELEASED");
+        server.verify();
+    }
+
+    @Test
+    void cancellationDuringReservationStillReleasesStock() {
+        OrderRepository orders = mock(OrderRepository.class);
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        Order pending = order(InventoryState.PENDING, OrderStatus.PENDING);
+        when(orders.findTop100ByInventoryStateOrderByCreatedAtAsc(InventoryState.PENDING)).thenReturn(List.of(pending));
+        when(orders.findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED))
+                .thenReturn(List.of());
+        when(mongo.findAndModify(any(Query.class), any(Update.class), eq(Order.class))).thenReturn(pending);
+        when(mongo.updateFirst(any(Query.class), any(Update.class), eq(Order.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 0L, null));
+        when(orders.findById(ID)).thenReturn(Optional.of(order(InventoryState.RELEASE_PENDING, OrderStatus.CANCELLED)));
+        server.expect(requestTo("http://catalog/internal/inventory/reservations/" + ID))
+                .andRespond(withNoContent());
+        server.expect(requestTo("http://catalog/internal/inventory/reservations/" + ID + "/release"))
+                .andRespond(withNoContent());
+
+        new OrderInventoryWorker(orders, mongo, builder, "http://catalog", "http://cart", "secret".repeat(6))
+                .reconcile();
+
+        verify(mongo, times(2)).updateFirst(any(Query.class), any(Update.class), eq(Order.class));
+        server.verify();
+    }
+
+    @Test
+    void releaseWaitsWhileReservationAttemptOwnsLease() {
+        OrderRepository orders = mock(OrderRepository.class);
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        RestClient.Builder builder = RestClient.builder();
+        Order base = order(InventoryState.RELEASE_PENDING, OrderStatus.CANCELLED);
+        Order leased = new Order(base.id(), base.userId(), base.status(), base.inventoryState(), base.items(),
+                base.subtotal(), base.shippingFee(), base.discount(), base.total(), base.shippingType(),
+                base.paymentType(), base.recipientName(), base.phone(), base.addressLine(),
+                base.requestFingerprint(), Instant.now().plusSeconds(30), base.cartClearedAt(),
+                base.eventPublishedAt(), base.cancelEventPublishedAt(), base.createdAt(), base.updatedAt());
+        when(orders.findTop100ByInventoryStateOrderByCreatedAtAsc(InventoryState.PENDING)).thenReturn(List.of());
+        when(orders.findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED))
+                .thenReturn(List.of());
+        when(orders.findTop100ByInventoryStateOrderByCreatedAtAsc(InventoryState.RELEASE_PENDING))
+                .thenReturn(List.of(leased));
+
+        new OrderInventoryWorker(orders, mongo, builder, "http://catalog", "http://cart", "secret".repeat(6))
+                .reconcile();
+
+        verifyNoInteractions(mongo);
+    }
+
+    @Test
     void confirmedOrderRemovesOnlyOriginalCartIds() {
         OrderRepository orders = mock(OrderRepository.class);
         MongoTemplate mongo = mock(MongoTemplate.class);
@@ -126,6 +202,6 @@ class OrderInventoryWorkerTest {
                 1, BigDecimal.valueOf(100), BigDecimal.valueOf(100));
         return new Order(ID, "user-1", status, state, List.of(item), BigDecimal.valueOf(100),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.valueOf(100), "STANDARD", "CASH_ON_DELIVERY",
-                "Ana", "0908123456", "12 Nguyễn Huệ", "fingerprint", null, null, null, now, now);
+                "Ana", "0908123456", "12 Nguyễn Huệ", "fingerprint", null, null, null, null, now, now);
     }
 }

@@ -4,6 +4,7 @@ import com.neora.events.OrderEvent;
 import com.neora.events.OrderEventType;
 import com.neora.order.model.Order;
 import com.neora.order.model.InventoryState;
+import com.neora.order.model.OrderStatus;
 import com.neora.order.repository.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +43,7 @@ public class OrderEventPublisher {
         var ready = orders.findTop100ByInventoryStateAndEventPublishedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED);
         var legacy = orders.findTop100ByInventoryStateIsNullAndRequestFingerprintNotNullAndEventPublishedAtIsNullOrderByCreatedAtAsc();
         for (Order order : java.util.stream.Stream.concat(ready.stream(), legacy.stream()).toList()) {
+            if (order.inventoryState() != null && order.status() != OrderStatus.CONFIRMED) continue;
             try {
                 OrderEvent event = new OrderEvent("ORDER_CREATED:" + order.id(), OrderEventType.ORDER_CREATED,
                         order.id(), order.userId(), order.status().name(),
@@ -52,6 +54,18 @@ public class OrderEventPublisher {
                         new Update().set("eventPublishedAt", Instant.now()), Order.class);
             } catch (Exception exception) {
                 log.warn("Không thể phát sự kiện cho đơn hàng {}. Sẽ thử lại.", order.id(), exception);
+            }
+        }
+        for (Order order : orders.findTop100ByStatusAndRequestFingerprintNotNullAndCancelEventPublishedAtIsNullOrderByUpdatedAtAsc(OrderStatus.CANCELLED)) {
+            try {
+                OrderEvent event = new OrderEvent("ORDER_CANCELLED:" + order.id(), OrderEventType.ORDER_CANCELLED,
+                        order.id(), order.userId(), order.status().name(), order.total(), order.updatedAt());
+                kafka.send(topic, order.id(), event).get(10, TimeUnit.SECONDS);
+                mongo.updateFirst(Query.query(Criteria.where("_id").is(order.id())
+                                .and("cancelEventPublishedAt").is(null)),
+                        new Update().set("cancelEventPublishedAt", Instant.now()), Order.class);
+            } catch (Exception exception) {
+                log.warn("Không thể phát sự kiện hủy đơn hàng {}. Sẽ thử lại.", order.id(), exception);
             }
         }
     }

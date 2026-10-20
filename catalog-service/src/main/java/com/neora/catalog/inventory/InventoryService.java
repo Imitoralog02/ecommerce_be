@@ -37,8 +37,8 @@ public class InventoryService {
     public void reserve(String orderId, List<Line> requested) {
         validateOrderId(orderId);
         List<Line> lines = normalize(requested);
-        for (Line line : lines) validateVariant(line.productId(), line.size(), line.color());
         try {
+            for (Line line : lines) validateVariant(line.productId(), line.size(), line.color());
             for (Line line : lines) reserveLine(orderId, line);
         } catch (RuntimeException failed) {
             try {

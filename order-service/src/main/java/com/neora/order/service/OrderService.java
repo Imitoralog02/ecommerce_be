@@ -55,7 +55,7 @@ public class OrderService {
                     quote.shippingFee(), quote.discount(), quote.total(),
                     OrderPricing.shippingType(request.shippingType()), OrderPricing.paymentType(request.paymentType()),
                     request.recipientName().trim(), request.phone().trim(), request.addressLine().trim(),
-                    fingerprint, null, null, null, now, now));
+                    fingerprint, null, null, null, null, now, now));
         } catch (DuplicateKeyException duplicate) {
             Order saved = orders.findById(orderId).orElseThrow(() -> duplicate);
             return repeatedRequest(saved, userId, fingerprint);

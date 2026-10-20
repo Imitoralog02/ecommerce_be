@@ -59,6 +59,8 @@ API Flutter tiếp tục dùng một base URL:
 http://localhost:8080/api/v1
 ```
 
+Hợp đồng MVP và ánh xạ trạng thái/DTO khi nối Flutter: [docs/flutter-api-contract.md](docs/flutter-api-contract.md).
+
 ## Build
 
 Build/test tất cả module:
@@ -103,7 +105,11 @@ Các endpoint dưới đây yêu cầu `Authorization: Bearer <access-token>`:
 
 Catalog có tồn kho riêng theo từng biến thể size/màu. `GET /api/v1/products/{id}/availability?size=M&color=...` trả số lượng có thể bán. Bộ sản phẩm demo được seed 20 chiếc mỗi biến thể khi chưa có bản ghi tồn kho; đặt `INVENTORY_DEMO_SEED_QUANTITY=0` ngoài môi trường demo và nạp số lượng thật trước khi bán. Các thao tác giữ/hoàn trả tồn kho chỉ có ở endpoint nội bộ của catalog và yêu cầu `X-Internal-Api-Key` (`INTERNAL_API_KEY`).
 
+Catalog mẫu mới khớp 8 sản phẩm trong Flutter (bao gồm size/màu). Database đã có dữ liệu không bị ghi đè. Nếu chỉ đang dùng bản seed demo cũ, có thể bật `CATALOG_SYNC_LEGACY_DEMO=true` một lần sau khi sao lưu để cập nhật đúng các bản ghi mang dấu hiệu seed cũ; tắt lại sau khi chạy. Không dùng chế độ này để di trú dữ liệu sản phẩm thật hoặc đơn đang xử lý.
+
 Tạo đơn trả ngay trạng thái `PENDING`; mobile cần đọc lại `GET /api/v1/orders/{id}` để biết kết quả giữ hàng. `inventoryState=RESERVED`/`status=CONFIRMED` mới là đơn được chấp nhận; `inventoryState=REJECTED`/`status=CANCELLED` nghĩa là thiếu hàng, giỏ vẫn được giữ. Khi catalog hoặc cart tạm lỗi, worker thử lại theo `ORDER_INVENTORY_POLL_MS`.
+
+`PATCH /api/v1/orders/{id}/cancel` cho phép chính chủ hủy đơn `PENDING` hoặc `CONFIRMED`, trả `CANCELLED`/`RELEASE_PENDING`. Tác vụ nền hoàn lại lượng đã giữ ở catalog, sau đó chuyển `inventoryState=RELEASED`; lỗi mạng được thử lại. Nếu hủy đúng lúc đang giữ hàng, tác vụ sẽ hoàn kho sau khi thao tác giữ hàng kết thúc. Kafka phát `ORDER_CANCELLED` để tạo notification. Chưa có tự động hoàn sản phẩm vào giỏ sau khi hủy.
 
 `POST /api/v1/orders/quote` nhận `{ "shippingType": "EXPRESS" }`, dùng giỏ hàng trên server và trả `subtotal`, `shippingFee`, `discount`, `total`, `currency`. Giao hỏa tốc hiện là 30.000 VND; giao tiêu chuẩn và nhận tại cửa hàng là 0 VND.
 
@@ -131,6 +137,6 @@ Auth-service ký JWT bằng `JWT_SECRET`. Các service bảo vệ dữ liệu t�
 
 ## Ghi chú production
 
-Đây là microservice base cho giai đoạn phát triển. Luồng giữ hàng đã dùng cập nhật nguyên tử theo từng biến thể nhưng còn cần vòng đời giải phóng/hoàn tất reservation, kiểm thử đa instance và kiểm thử tích hợp MongoDB/Redis/Kafka trước production. Cũng cần thu hồi access token tức thời nếu nghiệp vụ yêu cầu, transactional outbox cho Kafka, retry/dead-letter topic, distributed tracing, rate limiting tại gateway và secret management. Chưa có API quên/đặt lại mật khẩu và dịch vụ gửi email; không nối nút quên mật khẩu của Flutter vào API giả.
+Đây là microservice base cho giai đoạn phát triển. Luồng giữ hàng đã dùng cập nhật nguyên tử theo từng biến thể và hủy đơn hoàn lại reservation, nhưng còn cần bước hoàn tất reservation khi giao hàng, kiểm thử đa instance và kiểm thử tích hợp MongoDB/Redis/Kafka trước production. Cũng cần thu hồi access token tức thời nếu nghiệp vụ yêu cầu, transactional outbox cho Kafka, retry/dead-letter topic, distributed tracing, rate limiting tại gateway và secret management. Chưa có API quên/đặt lại mật khẩu và dịch vụ gửi email; không nối nút quên mật khẩu của Flutter vào API giả.
 #   e c o m m e r c e _ b e  
  

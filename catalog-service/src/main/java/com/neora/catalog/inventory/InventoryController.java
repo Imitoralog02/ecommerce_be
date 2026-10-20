@@ -37,7 +37,7 @@ public class InventoryController {
         inventory.reserve(orderId, request.lines());
     }
 
-    @DeleteMapping("/internal/inventory/reservations/{orderId}")
+    @PostMapping("/internal/inventory/reservations/{orderId}/release")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void release(@RequestHeader(value = "X-Internal-Api-Key", required = false) String key,
                         @PathVariable String orderId, @Valid @RequestBody LinesRequest request) {

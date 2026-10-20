@@ -28,6 +28,7 @@ public record Order(
         Instant inventoryClaimedUntil,
         Instant cartClearedAt,
         Instant eventPublishedAt,
+        Instant cancelEventPublishedAt,
         Instant createdAt,
         Instant updatedAt
 ) {}

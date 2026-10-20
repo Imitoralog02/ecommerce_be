@@ -49,6 +49,11 @@ public class OrderInventoryWorker {
         for (Order order : orders.findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED)) {
             clearPurchasedItems(order);
         }
+        for (Order order : orders.findTop100ByInventoryStateOrderByCreatedAtAsc(InventoryState.RELEASE_PENDING)) {
+            if (order.inventoryClaimedUntil() == null || !order.inventoryClaimedUntil().isAfter(Instant.now())) {
+                releaseStock(order);
+            }
+        }
     }
 
     private void reserve(Order order) {
@@ -66,11 +71,15 @@ public class OrderInventoryWorker {
                     .header("X-Internal-Api-Key", internalKey)
                     .body(new LinesRequest(order.items().stream().map(OrderInventoryWorker::line).toList()))
                     .retrieve().toBodilessEntity();
-            mongo.updateFirst(Query.query(Criteria.where("_id").is(order.id())
+            var confirmed = mongo.updateFirst(Query.query(Criteria.where("_id").is(order.id())
                             .and("inventoryState").is(InventoryState.PENDING)),
                     new Update().set("inventoryState", InventoryState.RESERVED)
                             .set("status", OrderStatus.CONFIRMED).set("updatedAt", Instant.now())
                             .unset("inventoryClaimedUntil"), Order.class);
+            if (confirmed.getModifiedCount() == 0) {
+                orders.findById(order.id()).filter(current -> current.status() == OrderStatus.CANCELLED)
+                        .ifPresent(this::releaseStock);
+            }
         } catch (RestClientResponseException response) {
             if (response.getStatusCode().value() == 409 || response.getStatusCode().value() == 400
                     || response.getStatusCode().value() == 404) {
@@ -99,6 +108,25 @@ public class OrderInventoryWorker {
                     new Update().set("cartClearedAt", Instant.now()), Order.class);
         } catch (RestClientException exception) {
             log.warn("Chưa thể dọn các món đã đặt khỏi giỏ cho đơn {}. Sẽ thử lại.", order.id(), exception);
+        }
+    }
+
+    private void releaseStock(Order order) {
+        try {
+            catalog.post().uri("/internal/inventory/reservations/{orderId}/release", order.id())
+                    .header("X-Internal-Api-Key", internalKey)
+                    .body(new LinesRequest(order.items().stream().map(OrderInventoryWorker::line).toList()))
+                    .retrieve().toBodilessEntity();
+            mongo.updateFirst(Query.query(Criteria.where("_id").is(order.id())
+                            .and("inventoryState").is(InventoryState.RELEASE_PENDING)),
+                    new Update().set("inventoryState", InventoryState.RELEASED)
+                            .set("updatedAt", Instant.now()).unset("inventoryClaimedUntil"), Order.class);
+        } catch (RestClientException exception) {
+            mongo.updateFirst(Query.query(Criteria.where("_id").is(order.id())
+                            .and("status").is(OrderStatus.CANCELLED)
+                            .and("inventoryState").is(InventoryState.RELEASED)),
+                    new Update().set("inventoryState", InventoryState.RELEASE_PENDING), Order.class);
+            log.warn("Chưa thể hoàn tồn kho cho đơn {}. Sẽ thử lại.", order.id(), exception);
         }
     }
 
