@@ -1,106 +1,148 @@
 # NÉORA Ecommerce Microservices
 
+Backend được xây dựng theo kiến trúc Microservices, trong đó mỗi service chạy như một Spring Boot process độc lập.
 
-Backend được tách thành các Spring Boot process độc lập. Flutter chỉ gọi API Gateway tại `http://localhost:8080/api/v1`; gateway chuyển request đến service sở hữu nghiệp vụ tương ứng.
+Ứng dụng Flutter chỉ giao tiếp với API Gateway tại `http://localhost:8080/api/v1`. Gateway chuyển request đến service sở hữu nghiệp vụ tương ứng.
 
-
-## Service boundaries
-
+## Service Boundaries
 
 | Module | Port | Sở hữu dữ liệu | Trách nhiệm |
 |---|---:|---|---|
-| `gateway-service` | 8080 | Không | Một entry point cho Flutter, route HTTP |
-| `auth-service` | 8081 | MongoDB `ecommerce_auth` | User, đăng ký, đăng nhập, profile, phát JWT |
-| `catalog-service` | 8082 | MongoDB `ecommerce_catalog`, Redis cache | Product, category, tìm kiếm, tồn kho theo size/màu |
-| `cart-service` | 8083 | Redis `cart:*` | Giỏ hàng; chỉ gọi catalog qua HTTP |
-| `order-service` | 8084 | MongoDB `ecommerce_order` | Checkout, order; phát Kafka event |
+| `gateway-service` | 8080 | Không | Entry point cho Flutter, định tuyến HTTP |
+| `auth-service` | 8081 | MongoDB `ecommerce_auth` | User, đăng ký, đăng nhập, profile, JWT |
+| `catalog-service` | 8082 | MongoDB `ecommerce_catalog`, Redis | Product, category, tìm kiếm, tồn kho theo size/màu |
+| `cart-service` | 8083 | Redis `cart:*` | Giỏ hàng, giao tiếp catalog qua HTTP |
+| `order-service` | 8084 | MongoDB `ecommerce_order` | Checkout, order, phát Kafka event |
 | `notification-service` | 8085 | MongoDB `ecommerce_notification` | Consume order event, lưu notification |
-| `customer-service` | 8086 | MongoDB `ecommerce_customer` | Sổ địa chỉ và wishlist của khách hàng |
-| `shared-events` | — | Không | Hợp đồng Kafka `OrderEvent` và `OrderEventType` |
-| `shared-kernel` | — | Không | Security filter và error contract kỹ thuật dùng chung |
+| `customer-service` | 8086 | MongoDB `ecommerce_customer` | Sổ địa chỉ, wishlist |
+| `shared-events` | — | Không | Kafka `OrderEvent`, `OrderEventType` |
+| `shared-kernel` | — | Không | Security filter, error contract dùng chung |
 
+Mỗi service sở hữu dữ liệu riêng và không truy cập trực tiếp collection của service khác.
 
-Không service nào truy cập collection của service khác. MongoDB dùng chung server local nhưng mỗi service có database riêng. Các biến `AUTH_MONGODB_URI`, `CATALOG_MONGODB_URI`, `ORDER_MONGODB_URI`, `NOTIFICATION_MONGODB_URI` và `CUSTOMER_MONGODB_URI` cho phép cấu hình độc lập.
+MongoDB có thể sử dụng chung một server local, nhưng mỗi service được cấu hình database riêng thông qua các biến:
 
+- `AUTH_MONGODB_URI`
+- `CATALOG_MONGODB_URI`
+- `ORDER_MONGODB_URI`
+- `NOTIFICATION_MONGODB_URI`
+- `CUSTOMER_MONGODB_URI`
 
-## Luồng xử lý
-
+## Luồng xử lý hệ thống
 
 ```text
-Flutter -> Gateway -> Auth / Catalog / Cart / Order / Notification / Customer
-                            Cart ----HTTP----> Catalog
-                            Order ---HTTP----> Cart / Catalog inventory
-                            Order ---Kafka---> Notification
-                         Customer ----HTTP----> Catalog
+Flutter Application
+        |
+        v
+    API Gateway
+        |
+        +---- Auth Service
+        +---- Catalog Service
+        +---- Cart Service
+        +---- Order Service
+        +---- Notification Service
+        +---- Customer Service
 
-Cart, Catalog cache -------------------------> Redis
-Auth / Catalog / Order / Notification / Customer -> database riêng
+Cart --------HTTP--------> Catalog
+Order -------HTTP--------> Cart / Catalog Inventory
+Order -------Kafka-------> Notification
+Customer ----HTTP--------> Catalog
+
+Cart / Catalog Cache ----> Redis
+
+Auth / Catalog / Order / Notification / Customer
+                |
+                v
+        MongoDB riêng từng service
 ```
 
+### Luồng xử lý đơn hàng
 
-Order không ghi trực tiếp notification. Đơn mới được lưu ở `PENDING`/`inventoryState=PENDING`; tác vụ nền giữ hàng tại catalog, chuyển thành `CONFIRMED`/`RESERVED` nếu đủ hàng hoặc `CANCELLED`/`REJECTED` nếu thiếu. Lỗi mạng được thử lại; các món đã đặt chỉ được xóa khỏi giỏ sau khi giữ hàng thành công. Sau xác nhận tồn kho, order-service phát `ORDER_CREATED` lên topic `order.lifecycle.v1`, thử lại khi Kafka lỗi. Notification-service dùng event ID cố định để bỏ qua event phát lại.
+Order Service không ghi trực tiếp notification.
 
+Khi người dùng tạo đơn hàng:
 
-## Chạy local
+1. Đơn hàng được lưu với `status=PENDING` và `inventoryState=PENDING`.
+2. Worker thực hiện giữ hàng tại Catalog Service.
+3. Nếu đủ hàng, trạng thái chuyển thành `CONFIRMED` và `RESERVED`.
+4. Nếu thiếu hàng, trạng thái chuyển thành `CANCELLED` và `REJECTED`.
+5. Các sản phẩm đã đặt chỉ được xóa khỏi giỏ sau khi giữ hàng thành công.
+6. Order Service phát `ORDER_CREATED` lên Kafka topic `order.lifecycle.v1`.
+7. Notification Service xử lý event và lưu thông báo.
 
+Các lỗi mạng được thử lại. Kafka event sử dụng event ID cố định để Notification Service có thể bỏ qua event được phát lại.
 
-Khởi động MongoDB, Redis và Kafka:
+## Chạy Local
 
+### 1. Khởi động MongoDB, Redis và Kafka
 
 ```powershell
 docker compose up -d --wait
 ```
 
+### 2. Chạy các Microservices
 
-Sau đó chạy mỗi service trong terminal riêng:
-
+Chạy mỗi service trong một terminal riêng:
 
 ```powershell
 .\gradlew.bat :auth-service:bootRun
+```
+
+```powershell
 .\gradlew.bat :catalog-service:bootRun
+```
+
+```powershell
 .\gradlew.bat :cart-service:bootRun
+```
+
+```powershell
 .\gradlew.bat :order-service:bootRun
+```
+
+```powershell
 .\gradlew.bat :notification-service:bootRun
+```
+
+```powershell
 .\gradlew.bat :customer-service:bootRun
+```
+
+```powershell
 .\gradlew.bat :gateway-service:bootRun
 ```
 
+### 3. API Base URL
 
-API Flutter tiếp tục dùng một base URL:
-
+Flutter sử dụng:
 
 ```text
 http://localhost:8080/api/v1
 ```
 
-<<<<<<< HEAD
-Hợp đồng MVP và ánh xạ trạng thái/DTO khi nối Flutter: [docs/flutter-api-contract.md](docs/flutter-api-contract.md).
-=======
->>>>>>> 0e0fa079f8a1b23588664fdb63c4c52e23df34df
+Hợp đồng MVP và ánh xạ trạng thái/DTO:
+
+[Flutter API Contract](docs/flutter-api-contract.md)
 
 ## Build
 
-
-Build/test tất cả module:
+### Build và test toàn bộ module
 
 ```powershell
 .\gradlew.bat clean test bootJar
 ```
 
-
-Build một service độc lập:
-
+### Build Order Service
 
 ```powershell
 .\gradlew.bat :order-service:bootJar
 ```
 
+JAR của mỗi service nằm trong thư mục:
 
-JAR của từng service nằm trong `<service>/build/libs/`.
+`<service>/build/libs/`
 
-
-## Endpoint routing
-
+## Endpoint Routing
 
 | Prefix | Service |
 |---|---|
@@ -111,12 +153,11 @@ JAR của từng service nằm trong `<service>/build/libs/`.
 | `/api/v1/notifications/**` | notification-service |
 | `/api/v1/addresses/**`, `/api/v1/wishlist/**` | customer-service |
 
+## Customer API
 
-### Customer API
+Các endpoint dưới đây yêu cầu header:
 
-
-Các endpoint dưới đây yêu cầu `Authorization: Bearer <access-token>`:
-
+`Authorization: Bearer <access-token>`
 
 | Chức năng | Endpoint |
 |---|---|
@@ -124,32 +165,139 @@ Các endpoint dưới đây yêu cầu `Authorization: Bearer <access-token>`:
 | Sửa/xóa địa chỉ | `PUT/DELETE /api/v1/addresses/{id}` |
 | Đặt địa chỉ mặc định | `PATCH /api/v1/addresses/{id}/default` |
 | Xem wishlist | `GET /api/v1/wishlist` |
-| Thêm sản phẩm | `POST /api/v1/wishlist/items` với body `{ "productId": "..." }` |
-| Xóa một/xóa hết | `DELETE /api/v1/wishlist/items/{productId}`, `DELETE /api/v1/wishlist` |
+| Thêm sản phẩm | `POST /api/v1/wishlist/items` |
+| Xóa sản phẩm | `DELETE /api/v1/wishlist/items/{productId}` |
+| Xóa wishlist | `DELETE /api/v1/wishlist` |
 
+Body thêm sản phẩm:
 
-### Checkout COD
+```json
+{
+  "productId": "..."
+}
+```
 
+## Checkout COD
 
-Catalog có tồn kho riêng theo từng biến thể size/màu. `GET /api/v1/products/{id}/availability?size=M&color=...` trả số lượng có thể bán. Bộ sản phẩm demo được seed 20 chiếc mỗi biến thể khi chưa có bản ghi tồn kho; đặt `INVENTORY_DEMO_SEED_QUANTITY=0` ngoài môi trường demo và nạp số lượng thật trước khi bán. Các thao tác giữ/hoàn trả tồn kho chỉ có ở endpoint nội bộ của catalog và yêu cầu `X-Internal-Api-Key` (`INTERNAL_API_KEY`).
+### Quản lý tồn kho
 
-<<<<<<< HEAD
-Catalog mẫu mới khớp 8 sản phẩm trong Flutter (bao gồm size/màu). Database đã có dữ liệu không bị ghi đè. Nếu chỉ đang dùng bản seed demo cũ, có thể bật `CATALOG_SYNC_LEGACY_DEMO=true` một lần sau khi sao lưu để cập nhật đúng các bản ghi mang dấu hiệu seed cũ; tắt lại sau khi chạy. Không dùng chế độ này để di trú dữ liệu sản phẩm thật hoặc đơn đang xử lý.
+Catalog quản lý tồn kho theo từng biến thể size và màu.
 
-Tạo đơn trả ngay trạng thái `PENDING`; mobile cần đọc lại `GET /api/v1/orders/{id}` để biết kết quả giữ hàng. `inventoryState=RESERVED`/`status=CONFIRMED` mới là đơn được chấp nhận; `inventoryState=REJECTED`/`status=CANCELLED` nghĩa là thiếu hàng, giỏ vẫn được giữ. Khi catalog hoặc cart tạm lỗi, worker thử lại theo `ORDER_INVENTORY_POLL_MS`.
+API kiểm tra tồn kho:
 
-`PATCH /api/v1/orders/{id}/cancel` cho phép chính chủ hủy đơn `PENDING` hoặc `CONFIRMED`, trả `CANCELLED`/`RELEASE_PENDING`. Tác vụ nền hoàn lại lượng đã giữ ở catalog, sau đó chuyển `inventoryState=RELEASED`; lỗi mạng được thử lại. Nếu hủy đúng lúc đang giữ hàng, tác vụ sẽ hoàn kho sau khi thao tác giữ hàng kết thúc. Kafka phát `ORDER_CANCELLED` để tạo notification. Chưa có tự động hoàn sản phẩm vào giỏ sau khi hủy.
-=======
+`GET /api/v1/products/{id}/availability?size=M&color=...`
 
-Tạo đơn trả ngay trạng thái `PENDING`; mobile cần đọc lại `GET /api/v1/orders/{id}` để biết kết quả giữ hàng. `inventoryState=RESERVED`/`status=CONFIRMED` mới là đơn được chấp nhận; `inventoryState=REJECTED`/`status=CANCELLED` nghĩa là thiếu hàng, giỏ vẫn được giữ. Khi catalog hoặc cart tạm lỗi, worker thử lại theo `ORDER_INVENTORY_POLL_MS`.
+Dữ liệu demo được seed 20 sản phẩm cho mỗi biến thể khi chưa có bản ghi tồn kho.
 
->>>>>>> 0e0fa079f8a1b23588664fdb63c4c52e23df34df
+Đối với môi trường không phải demo, thiết lập:
 
-`POST /api/v1/orders/quote` nhận `{ "shippingType": "EXPRESS" }`, dùng giỏ hàng trên server và trả `subtotal`, `shippingFee`, `discount`, `total`, `currency`. Giao hỏa tốc hiện là 30.000 VND; giao tiêu chuẩn và nhận tại cửa hàng là 0 VND.
+```env
+INVENTORY_DEMO_SEED_QUANTITY=0
+```
 
+Các thao tác giữ và hoàn tồn kho sử dụng endpoint nội bộ, yêu cầu:
 
-`POST /api/v1/orders` yêu cầu header `Idempotency-Key` (8–128 ký tự chữ, số, `_` hoặc `-`) và body ví dụ:
+`X-Internal-Api-Key`
 
+Giá trị được cấu hình qua `INTERNAL_API_KEY`.
+
+### Đồng bộ Catalog Demo
+
+Catalog mẫu khớp 8 sản phẩm trong Flutter, bao gồm size và màu.
+
+Database hiện có không bị ghi đè mặc định.
+
+Đối với dữ liệu seed demo cũ, có thể sử dụng:
+
+```env
+CATALOG_SYNC_LEGACY_DEMO=true
+```
+
+Chỉ bật sau khi sao lưu và tắt lại khi hoàn thành.
+
+Không sử dụng chế độ này để di trú dữ liệu sản phẩm thật hoặc đơn hàng đang xử lý.
+
+### Trạng thái đơn hàng
+
+Khi tạo đơn:
+
+- `PENDING` / `PENDING`: Đang chờ giữ hàng.
+- `CONFIRMED` / `RESERVED`: Đã giữ hàng thành công.
+- `CANCELLED` / `REJECTED`: Không đủ hàng.
+
+Ứng dụng Flutter cần gọi:
+
+`GET /api/v1/orders/{id}`
+
+để cập nhật kết quả xử lý tồn kho.
+
+Khi Catalog hoặc Cart tạm thời gặp lỗi, worker sẽ thử lại theo cấu hình:
+
+`ORDER_INVENTORY_POLL_MS`
+
+### Hủy đơn hàng
+
+Endpoint:
+
+`PATCH /api/v1/orders/{id}/cancel`
+
+Người sở hữu đơn có thể hủy đơn ở trạng thái `PENDING` hoặc `CONFIRMED`.
+
+Sau khi yêu cầu hủy:
+
+1. Đơn chuyển sang `CANCELLED` / `RELEASE_PENDING`.
+2. Worker thực hiện hoàn tồn kho.
+3. Khi hoàn thành, `inventoryState=RELEASED`.
+4. Order Service phát `ORDER_CANCELLED` lên Kafka.
+5. Notification Service tạo thông báo hủy đơn.
+
+Nếu đơn bị hủy trong khi đang giữ hàng, hệ thống hoàn kho sau khi thao tác giữ hàng kết thúc.
+
+Hiện chưa có chức năng tự động đưa sản phẩm trở lại giỏ sau khi hủy.
+
+### Báo giá đơn hàng
+
+Endpoint:
+
+`POST /api/v1/orders/quote`
+
+Request:
+
+```json
+{
+  "shippingType": "EXPRESS"
+}
+```
+
+Response chứa:
+
+- `subtotal`
+- `shippingFee`
+- `discount`
+- `total`
+- `currency`
+
+Phí vận chuyển hiện tại:
+
+| Loại giao hàng | Phí |
+|---|---:|
+| EXPRESS | 30.000 VND |
+| STANDARD | 0 VND |
+| Nhận tại cửa hàng | 0 VND |
+
+### Tạo đơn hàng
+
+Endpoint:
+
+`POST /api/v1/orders`
+
+Header bắt buộc:
+
+`Idempotency-Key`
+
+Key dài 8–128 ký tự, chỉ bao gồm chữ, số, `_` hoặc `-`.
+
+Request:
 
 ```json
 {
@@ -161,32 +309,123 @@ Tạo đơn trả ngay trạng thái `PENDING`; mobile cần đọc lại `GET /
 }
 ```
 
+Cùng người dùng và cùng key sẽ trả về cùng đơn hàng.
 
-Cùng user và key sẽ trả cùng đơn; dùng lại key với thông tin khác nhận HTTP 409. `couponCode` khác rỗng bị từ chối cho đến khi backend khuyến mãi hoàn thành. Các phương thức thanh toán trực tuyến cũng bị từ chối thay vì tạo đơn giả đã thanh toán.
+Sử dụng lại key với thông tin khác sẽ nhận HTTP `409 Conflict`.
 
+`couponCode` khác rỗng bị từ chối cho đến khi backend khuyến mãi được hoàn thiện.
 
-### Phiên đăng nhập cho mobile
+Các phương thức thanh toán trực tuyến chưa được hỗ trợ và sẽ bị từ chối.
 
+## Phiên đăng nhập Mobile
 
-`POST /api/v1/auth/register` và `POST /api/v1/auth/login` trả `accessToken`, `tokenType`, `expiresIn`, `refreshToken`, `refreshExpiresIn` và `user`. Access token mặc định sống 30 phút; refresh token mặc định sống 30 ngày (`AUTH_REFRESH_TTL`). Chỉ lưu refresh token trong kho an toàn của thiết bị; không ghi token vào log.
+### Đăng ký và đăng nhập
 
+Endpoints:
 
-Khi access token hết hạn, gọi `POST /api/v1/auth/refresh` với body `{ "refreshToken": "..." }`. Phản hồi có cả access token và refresh token mới; refresh token cũ chỉ dùng được một lần. Nếu nhận HTTP 401, yêu cầu người dùng đăng nhập lại. `POST /api/v1/auth/logout` nhận cùng body và trả HTTP 204 để thu hồi refresh token hiện tại. App phải xóa cả hai token trên thiết bị. Do các service tự xác minh JWT, access token đã phát vẫn hợp lệ đến khi hết hạn; logout không thu hồi access token ngay lập tức.
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
 
+Response bao gồm:
 
-Auth-service ký JWT bằng `JWT_SECRET`. Các service bảo vệ dữ liệu tự xác minh JWT bằng cùng secret. Thiết lập các biến môi trường từ `.env.example` trong terminal hoặc môi trường chạy service; Gradle `bootRun` không tự đọc file `.env`. Thay secret phát triển trước khi triển khai.
+- `accessToken`
+- `tokenType`
+- `expiresIn`
+- `refreshToken`
+- `refreshExpiresIn`
+- `user`
 
+Thời gian mặc định:
 
-## Ghi chú production
+| Token | Thời hạn |
+|---|---|
+| Access Token | 30 phút |
+| Refresh Token | 30 ngày |
 
-<<<<<<< HEAD
-Đây là microservice base cho giai đoạn phát triển. Luồng giữ hàng đã dùng cập nhật nguyên tử theo từng biến thể và hủy đơn hoàn lại reservation, nhưng còn cần bước hoàn tất reservation khi giao hàng, kiểm thử đa instance và kiểm thử tích hợp MongoDB/Redis/Kafka trước production. Cũng cần thu hồi access token tức thời nếu nghiệp vụ yêu cầu, transactional outbox cho Kafka, retry/dead-letter topic, distributed tracing, rate limiting tại gateway và secret management. Chưa có API quên/đặt lại mật khẩu và dịch vụ gửi email; không nối nút quên mật khẩu của Flutter vào API giả.
-#   e c o m m e r c e _ b e 
- 
-=======
+Refresh token được cấu hình bằng `AUTH_REFRESH_TTL`.
 
-Đây là microservice base cho giai đoạn phát triển. Luồng giữ hàng đã dùng cập nhật nguyên tử theo từng biến thể nhưng còn cần vòng đời giải phóng/hoàn tất reservation, kiểm thử đa instance và kiểm thử tích hợp MongoDB/Redis/Kafka trước production. Cũng cần thu hồi access token tức thời nếu nghiệp vụ yêu cầu, transactional outbox cho Kafka, retry/dead-letter topic, distributed tracing, rate limiting tại gateway và secret management. Chưa có API quên/đặt lại mật khẩu và dịch vụ gửi email; không nối nút quên mật khẩu của Flutter vào API giả.
-#   e c o m m e r c e _ b e 
- 
->>>>>>> 0e0fa079f8a1b23588664fdb63c4c52e23df34df
- 
+Chỉ lưu refresh token trong kho lưu trữ an toàn của thiết bị và không ghi token vào log.
+
+### Refresh Token
+
+Endpoint:
+
+`POST /api/v1/auth/refresh`
+
+Request:
+
+```json
+{
+  "refreshToken": "..."
+}
+```
+
+API trả về access token và refresh token mới.
+
+Refresh token cũ chỉ được sử dụng một lần.
+
+Nếu nhận HTTP `401`, ứng dụng yêu cầu người dùng đăng nhập lại.
+
+### Logout
+
+Endpoint:
+
+`POST /api/v1/auth/logout`
+
+Request:
+
+```json
+{
+  "refreshToken": "..."
+}
+```
+
+Response: HTTP `204 No Content`.
+
+Ứng dụng cần xóa cả access token và refresh token khỏi thiết bị.
+
+Access token đã phát vẫn hợp lệ cho đến khi hết hạn vì các service tự xác minh JWT.
+
+### JWT Configuration
+
+Auth Service ký JWT bằng:
+
+`JWT_SECRET`
+
+Các service xác minh JWT bằng cùng secret.
+
+Thiết lập biến môi trường từ `.env.example`.
+
+Lưu ý: Gradle `bootRun` không tự động đọc file `.env`.
+
+Thay secret phát triển trước khi triển khai production.
+
+## Ghi chú Production
+
+Dự án hiện là nền tảng Microservices trong giai đoạn phát triển.
+
+Đã có:
+
+- Quản lý tồn kho theo từng biến thể.
+- Cập nhật giữ hàng nguyên tử.
+- Hủy đơn và hoàn tồn kho.
+- Xử lý bất đồng bộ với Kafka.
+- Retry cho các tác vụ nền.
+- JWT authentication.
+- Phân tách database theo service.
+
+Các hạng mục cần hoàn thiện trước production:
+
+- Hoàn tất reservation khi giao hàng.
+- Kiểm thử đa instance.
+- Integration testing với MongoDB, Redis và Kafka.
+- Transactional Outbox cho Kafka.
+- Retry và Dead Letter Topic.
+- Distributed Tracing.
+- Rate Limiting tại Gateway.
+- Secret Management.
+- Thu hồi access token tức thời nếu nghiệp vụ yêu cầu.
+- API quên và đặt lại mật khẩu.
+- Dịch vụ gửi email thực tế.
+
+Không kết nối chức năng quên mật khẩu của Flutter với API giả khi backend chưa hỗ trợ.
