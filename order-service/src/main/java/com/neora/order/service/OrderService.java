@@ -1,6 +1,7 @@
 package com.neora.order.service;
 
 import com.neora.order.dto.CreateOrderRequest;
+import com.neora.order.dto.AbandonOrderResponse;
 import com.neora.order.dto.OrderResponse;
 import com.neora.order.dto.OrderQuoteRequest;
 import com.neora.order.dto.OrderQuoteResponse;
@@ -43,6 +44,7 @@ public class OrderService {
         if (existing != null) return repeatedRequest(existing, userId, fingerprint);
 
         CartResponse cartResponse = loadCart(token);
+        verifyExpectedCart(request, cartResponse);
         OrderQuoteResponse quote = OrderPricing.quote(subtotal(cartResponse), request.shippingType(), request.couponCode());
         List<OrderItem> items = cartResponse.items().stream().map(item -> new OrderItem(item.id(), item.product().id(),
                 item.product().title(), item.product().imagePath(), item.selectedSize(), item.selectedColor(),
@@ -64,15 +66,48 @@ public class OrderService {
     }
 
     public List<OrderResponse> list(String userId) {
-        return orders.findByUserIdOrderByCreatedAtDesc(userId).stream().map(OrderResponse::from).toList();
+        return orders.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .filter(order -> order.status() != OrderStatus.ABANDONED)
+                .map(OrderResponse::from).toList();
     }
 
     public OrderResponse get(String userId, String id) {
         return OrderResponse.from(orders.findByIdAndUserId(id, userId)
+                .filter(order -> order.status() != OrderStatus.ABANDONED)
                 .orElseThrow(() -> new NotFoundException("Không tìm thấy đơn hàng")));
     }
 
+    public OrderResponse getByIdempotencyKey(String userId, String idempotencyKey) {
+        return get(userId, OrderIdempotency.orderId(userId, idempotencyKey));
+    }
+
+    public AbandonOrderResponse abandon(String userId, String idempotencyKey) {
+        String id = OrderIdempotency.orderId(userId, idempotencyKey);
+        Order existing = orders.findById(id).orElse(null);
+        if (existing != null) return abandonOutcome(existing, userId);
+
+        Instant now = Instant.now();
+        Order marker = new Order(id, userId, OrderStatus.ABANDONED, InventoryState.REJECTED,
+                List.of(), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                "", "", "", "", "", null, null, null, null, null, now, now);
+        try {
+            orders.insert(marker);
+            return AbandonOrderResponse.abandoned();
+        } catch (DuplicateKeyException duplicate) {
+            return abandonOutcome(orders.findById(id).orElseThrow(() -> duplicate), userId);
+        }
+    }
+
+    private AbandonOrderResponse abandonOutcome(Order existing, String userId) {
+        if (!existing.userId().equals(userId)) throw new NotFoundException("Không tìm thấy đơn hàng");
+        if (existing.status() == OrderStatus.ABANDONED) return AbandonOrderResponse.abandoned();
+        return AbandonOrderResponse.found(OrderResponse.from(existing));
+    }
+
     private OrderResponse repeatedRequest(Order existing, String userId, String fingerprint) {
+        if (existing.status() == OrderStatus.ABANDONED) {
+            throw new ConflictException("Yêu cầu đặt hàng này đã được kết thúc; vui lòng dùng key mới");
+        }
         if (!existing.userId().equals(userId) || !fingerprint.equals(existing.requestFingerprint())) {
             throw new ConflictException("Idempotency-Key đã được sử dụng cho một yêu cầu khác");
         }
@@ -86,6 +121,17 @@ public class OrderService {
             throw new IllegalArgumentException("Giỏ hàng đang trống");
         }
         return response;
+    }
+
+    private void verifyExpectedCart(CreateOrderRequest request, CartResponse snapshot) {
+        if (request.expectedCartItems() == null) return;
+        List<String> expected = request.expectedCartItems().stream()
+                .map(item -> item.id() + ":" + item.quantity()).sorted().toList();
+        List<String> actual = snapshot.items().stream()
+                .map(item -> item.id() + ":" + item.quantity()).sorted().toList();
+        if (!expected.equals(actual)) {
+            throw new ConflictException("Giỏ hàng đã thay đổi. Vui lòng kiểm tra lại trước khi đặt hàng");
+        }
     }
 
     private BigDecimal subtotal(CartResponse snapshot) {

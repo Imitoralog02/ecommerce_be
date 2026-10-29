@@ -8,7 +8,7 @@ spring:
     consumer:
       group-id: notification-service
       auto-offset-reset: earliest
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
       properties:
         spring.json.trusted.packages: com.neora.events
         spring.json.value.default.type: com.neora.events.OrderEvent

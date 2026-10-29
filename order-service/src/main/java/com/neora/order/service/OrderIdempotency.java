@@ -6,6 +6,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.Comparator;
+import java.util.stream.Collectors;
 
 public final class OrderIdempotency {
     private OrderIdempotency() {}
@@ -18,13 +20,20 @@ public final class OrderIdempotency {
     }
 
     public static String fingerprint(CreateOrderRequest request) {
-        return digest(String.join("\u0000",
+        String original = String.join("\u0000",
                 OrderPricing.shippingType(request.shippingType()),
                 OrderPricing.paymentType(request.paymentType()),
                 request.recipientName().trim(),
                 request.phone().trim(),
                 request.addressLine().trim(),
-                request.couponCode() == null ? "" : request.couponCode().trim().toUpperCase()));
+                request.couponCode() == null ? "" : request.couponCode().trim().toUpperCase());
+        if (request.expectedCartItems() == null) return digest(original);
+        String items = request.expectedCartItems().stream()
+                .sorted(Comparator.comparing(CreateOrderRequest.ExpectedCartItem::id)
+                        .thenComparingInt(CreateOrderRequest.ExpectedCartItem::quantity))
+                .map(item -> item.id() + ":" + item.quantity())
+                .collect(Collectors.joining("|"));
+        return digest(original + "\u0000" + items);
     }
 
     private static String digest(String value) {

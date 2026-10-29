@@ -34,6 +34,8 @@ class NotificationServiceTest {
         ArgumentCaptor<Notification> captor = ArgumentCaptor.forClass(Notification.class);
         verify(repository).insert(captor.capture());
         assertThat(captor.getValue().id()).isEqualTo(event.eventId());
+        assertThat(captor.getValue().title()).isEqualTo("Đã nhận đơn hàng");
+        assertThat(captor.getValue().message()).doesNotContain("PENDING", "ord_123");
         verify(repository, never()).save(any(Notification.class));
     }
 }

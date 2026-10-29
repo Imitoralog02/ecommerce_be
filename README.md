@@ -126,6 +126,14 @@ Hợp đồng MVP và ánh xạ trạng thái/DTO:
 
 ## Build
 
+Sau khi hạ tầng và cả bảy service đã chạy, kiểm tra luồng API qua Gateway:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-api.ps1
+```
+
+Script chỉ chấp nhận Gateway trên máy local. Nó tạo tài khoản và đơn thử trong database phát triển, kiểm tra đăng nhập/refresh, catalog, wishlist, địa chỉ, giỏ, COD/idempotency, kết thúc key COD chưa có đơn, thông báo Kafka, hủy/hoàn kho và đơn thiếu tồn kho. Đơn COD thành công được hủy sau khi kiểm tra; tài khoản và lịch sử đơn thử vẫn được lưu để đối chiếu.
+
 ### Build và test toàn bộ module
 
 ```powershell
@@ -158,6 +166,20 @@ JAR của mỗi service nằm trong thư mục:
 Các endpoint dưới đây yêu cầu header:
 
 `Authorization: Bearer <access-token>`
+
+Mỗi tài khoản có tối đa một địa chỉ `isDefault=true`. MongoDB áp dụng unique partial index
+`unique_default_address_per_user` cho quy tắc này. Nếu database cũ đã có nhiều địa chỉ mặc định
+của cùng một người dùng, hãy sao lưu và xử lý bản ghi trùng trước khi khởi động customer-service;
+MongoDB sẽ không tạo được index khi dữ liệu đang vi phạm. Có thể kiểm tra trong database
+`ecommerce_customer` bằng:
+
+```javascript
+db.shipping_addresses.aggregate([
+  { $match: { isDefault: true } },
+  { $group: { _id: "$userId", count: { $sum: 1 }, ids: { $push: "$_id" } } },
+  { $match: { count: { $gt: 1 } } }
+])
+```
 
 | Chức năng | Endpoint |
 |---|---|

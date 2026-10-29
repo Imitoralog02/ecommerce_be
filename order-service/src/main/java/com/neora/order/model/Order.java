@@ -29,6 +29,21 @@ public record Order(
         Instant cartClearedAt,
         Instant eventPublishedAt,
         Instant cancelEventPublishedAt,
+        Instant fulfillmentEventPublishedAt,
+        String trackingNumber,
+        String estimatedDelivery,
         Instant createdAt,
         Instant updatedAt
-) {}
+) {
+    public Order(String id, String userId, OrderStatus status, InventoryState inventoryState,
+                 List<OrderItem> items, BigDecimal subtotal, BigDecimal shippingFee, BigDecimal discount,
+                 BigDecimal total, String shippingType, String paymentType, String recipientName,
+                 String phone, String addressLine, String requestFingerprint, Instant inventoryClaimedUntil,
+                 Instant cartClearedAt, Instant eventPublishedAt, Instant cancelEventPublishedAt,
+                 Instant createdAt, Instant updatedAt) {
+        this(id, userId, status, inventoryState, items, subtotal, shippingFee, discount, total,
+                shippingType, paymentType, recipientName, phone, addressLine, requestFingerprint,
+                inventoryClaimedUntil, cartClearedAt, eventPublishedAt, cancelEventPublishedAt,
+                null, null, null, createdAt, updatedAt);
+    }
+}

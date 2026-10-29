@@ -2,11 +2,14 @@ package com.neora.customer.address.model;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
 @Document("shipping_addresses")
+@CompoundIndex(name = "unique_default_address_per_user", def = "{'userId': 1}",
+        unique = true, partialFilter = "{'isDefault': true}")
 public record ShippingAddress(
         @Id String id,
         @Indexed String userId,
