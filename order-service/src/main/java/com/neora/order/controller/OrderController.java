@@ -34,8 +34,9 @@ public class OrderController {
         this.fulfillment = fulfillment;
     }
     @PostMapping("/quote")
-    public OrderQuoteResponse quote(Authentication authentication, @Valid @RequestBody OrderQuoteRequest request) {
-        return orders.quote(authentication.getCredentials().toString(), request);
+    public OrderQuoteResponse quote(@AuthenticationPrincipal AuthenticatedUser user, Authentication authentication,
+                                    @Valid @RequestBody OrderQuoteRequest request) {
+        return orders.quote(user.id(), authentication.getCredentials().toString(), request);
     }
     @PostMapping @ResponseStatus(HttpStatus.CREATED)
     public OrderResponse create(@AuthenticationPrincipal AuthenticatedUser user, Authentication authentication,

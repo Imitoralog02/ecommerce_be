@@ -42,7 +42,9 @@ public class OrderEventPublisher {
     public void publishPending() {
         var ready = orders.findTop100ByInventoryStateAndEventPublishedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED);
         var legacy = orders.findTop100ByInventoryStateIsNullAndRequestFingerprintNotNullAndEventPublishedAtIsNullOrderByCreatedAtAsc();
-        for (Order order : java.util.stream.Stream.concat(ready.stream(), legacy.stream()).toList()) {
+        var finalized = orders.findTop100ByInventoryStateAndEventPublishedAtIsNullOrderByCreatedAtAsc(InventoryState.FINALIZED);
+        for (Order order : java.util.stream.Stream.of(ready.stream(), finalized.stream(), legacy.stream())
+                .flatMap(java.util.function.Function.identity()).toList()) {
             if (order.status() == null || !java.util.List.of(OrderStatus.CONFIRMED, OrderStatus.PROCESSING,
                     OrderStatus.SHIPPED, OrderStatus.DELIVERED).contains(order.status())) continue;
             try {

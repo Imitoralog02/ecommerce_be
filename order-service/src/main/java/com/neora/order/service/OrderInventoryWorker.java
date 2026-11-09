@@ -49,10 +49,17 @@ public class OrderInventoryWorker {
         for (Order order : orders.findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED)) {
             clearPurchasedItems(order);
         }
+        for (Order order : orders.findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState.FINALIZED)) {
+            clearPurchasedItems(order);
+        }
         for (Order order : orders.findTop100ByInventoryStateOrderByCreatedAtAsc(InventoryState.RELEASE_PENDING)) {
             if (order.inventoryClaimedUntil() == null || !order.inventoryClaimedUntil().isAfter(Instant.now())) {
                 releaseStock(order);
             }
+        }
+        for (Order order : orders.findTop100ByStatusAndInventoryStateOrderByCreatedAtAsc(
+                OrderStatus.DELIVERED, InventoryState.RESERVED)) {
+            finalizeStock(order);
         }
     }
 
@@ -104,7 +111,8 @@ public class OrderInventoryWorker {
                     .header("X-Internal-Api-Key", internalKey).body(new CartConsumeRequest(ids))
                     .retrieve().toBodilessEntity();
             mongo.updateFirst(Query.query(Criteria.where("_id").is(order.id())
-                            .and("inventoryState").is(InventoryState.RESERVED).and("cartClearedAt").is(null)),
+                            .and("inventoryState").in(InventoryState.RESERVED, InventoryState.FINALIZED)
+                            .and("cartClearedAt").is(null)),
                     new Update().set("cartClearedAt", Instant.now()), Order.class);
         } catch (RestClientException exception) {
             log.warn("Chưa thể dọn các món đã đặt khỏi giỏ cho đơn {}. Sẽ thử lại.", order.id(), exception);
@@ -130,6 +138,22 @@ public class OrderInventoryWorker {
         }
     }
 
+    private void finalizeStock(Order order) {
+        try {
+            catalog.post().uri("/internal/inventory/reservations/{orderId}/finalize", order.id())
+                    .header("X-Internal-Api-Key", internalKey)
+                    .body(new LinesRequest(order.items().stream().map(OrderInventoryWorker::line).toList()))
+                    .retrieve().toBodilessEntity();
+            mongo.updateFirst(Query.query(Criteria.where("_id").is(order.id())
+                            .and("status").is(OrderStatus.DELIVERED)
+                            .and("inventoryState").is(InventoryState.RESERVED)),
+                    new Update().set("inventoryState", InventoryState.FINALIZED)
+                            .set("updatedAt", Instant.now()), Order.class);
+        } catch (RestClientException exception) {
+            log.warn("Chưa thể chốt tồn kho cho đơn {}. Sẽ thử lại.", order.id(), exception);
+        }
+    }
+
     private void retryLater(String orderId, Exception exception) {
         mongo.updateFirst(Query.query(Criteria.where("_id").is(orderId).and("inventoryState").is(InventoryState.PENDING)),
                 new Update().unset("inventoryClaimedUntil"), Order.class);
@@ -137,10 +161,12 @@ public class OrderInventoryWorker {
     }
 
     private static InventoryLine line(OrderItem item) {
-        return new InventoryLine(item.productId(), item.selectedSize(), item.selectedColor(), item.quantity());
+        return new InventoryLine(item.productId(), item.selectedSize(), item.selectedColor(), item.quantity(),
+                item.flashSaleId(), item.unitPrice());
     }
 
     private record LinesRequest(List<InventoryLine> lines) {}
-    private record InventoryLine(String productId, String size, String color, int quantity) {}
+    private record InventoryLine(String productId, String size, String color, int quantity,
+                                 String flashSaleId, java.math.BigDecimal unitPrice) {}
     private record CartConsumeRequest(List<String> itemIds) {}
 }

@@ -3,6 +3,9 @@ spring:
     name: notification-service
   mongodb:
     uri: ${NOTIFICATION_MONGODB_URI:mongodb://localhost:27017/ecommerce_notification}
+  data:
+    mongodb:
+      auto-index-creation: true
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:

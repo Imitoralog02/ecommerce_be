@@ -26,7 +26,9 @@ public class AuthSecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/v1/auth/register", "/api/v1/auth/login",
-                                "/api/v1/auth/refresh", "/api/v1/auth/logout", "/actuator/health/**").permitAll()
+                                "/api/v1/auth/refresh", "/api/v1/auth/logout",
+                                "/api/v1/auth/password-reset/request", "/api/v1/auth/password-reset/confirm",
+                                "/actuator/health/**").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(errors -> errors.authenticationEntryPoint((request, response, ex) ->
                         response.sendError(HttpServletResponse.SC_UNAUTHORIZED)))

@@ -13,12 +13,12 @@ public record OrderResponse(
         String id, OrderStatus status, InventoryState inventoryState, List<OrderItem> items, BigDecimal subtotal, BigDecimal shippingFee,
         BigDecimal discount, BigDecimal total, String shippingType, String paymentType,
         String recipientName, String phone, String addressLine, String trackingNumber,
-        String estimatedDelivery, Instant createdAt, Instant updatedAt
+        String estimatedDelivery, Instant createdAt, Instant updatedAt, String couponCode
 ) {
     public static OrderResponse from(Order order) {
         return new OrderResponse(order.id(), order.status(), order.inventoryState(), order.items(), order.subtotal(), order.shippingFee(),
                 order.discount(), order.total(), order.shippingType(), order.paymentType(), order.recipientName(),
                 order.phone(), order.addressLine(), order.trackingNumber(), order.estimatedDelivery(),
-                order.createdAt(), order.updatedAt());
+                order.createdAt(), order.updatedAt(), order.couponCode());
     }
 }

@@ -15,5 +15,6 @@ public interface OrderRepository extends MongoRepository<Order, String> {
     List<Order> findTop100ByInventoryStateIsNullAndRequestFingerprintNotNullAndEventPublishedAtIsNullOrderByCreatedAtAsc();
     List<Order> findTop100ByInventoryStateOrderByCreatedAtAsc(InventoryState state);
     List<Order> findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState state);
+    List<Order> findTop100ByStatusAndInventoryStateOrderByCreatedAtAsc(OrderStatus status, InventoryState state);
     List<Order> findTop100ByStatusAndRequestFingerprintNotNullAndCancelEventPublishedAtIsNullOrderByUpdatedAtAsc(OrderStatus status);
 }

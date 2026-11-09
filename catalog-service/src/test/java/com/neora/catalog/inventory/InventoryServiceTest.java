@@ -1,8 +1,10 @@
 package com.neora.catalog.inventory;
 
 import com.neora.catalog.model.Product;
+import com.neora.catalog.flashsale.FlashSaleAllocationService;
 import com.neora.catalog.repository.ProductRepository;
 import com.neora.shared.error.ConflictException;
+import com.mongodb.client.result.UpdateResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -23,17 +25,19 @@ class InventoryServiceTest {
     private MongoTemplate mongo;
     private ProductRepository products;
     private InventoryService inventory;
+    private FlashSaleAllocationService flashSales;
     private InventoryService.Line line;
 
     @BeforeEach
     void setUp() {
         mongo = mock(MongoTemplate.class);
         products = mock(ProductRepository.class);
-        inventory = new InventoryService(mongo, products);
+        flashSales = mock(FlashSaleAllocationService.class);
+        inventory = new InventoryService(mongo, products, flashSales);
         line = new InventoryService.Line("product-1", "M", "Đen", 2);
         Product product = mock(Product.class);
         when(product.active()).thenReturn(true);
-        when(product.availableSizes()).thenReturn(List.of("M"));
+        when(product.availableSizes()).thenReturn(List.of("M", "L"));
         when(product.colorNames()).thenReturn(List.of("Đen"));
         when(products.findById("product-1")).thenReturn(Optional.of(product));
     }
@@ -65,6 +69,38 @@ class InventoryServiceTest {
     }
 
     @Test
+    void saleQuotaFollowsStockReservationAndCancellation() {
+        InventoryService.Line saleLine = new InventoryService.Line("product-1", "M", "Đen", 2,
+                "sale", java.math.BigDecimal.valueOf(399_000));
+        InventoryVariant stock = new InventoryVariant("sku", "product-1", "M", "Đen", 5, Map.of());
+        when(mongo.findById(anyString(), eq(InventoryVariant.class))).thenReturn(stock);
+        when(mongo.findAndModify(any(Query.class), any(Update.class), eq(InventoryVariant.class)))
+                .thenReturn(stock);
+
+        inventory.reserve(ORDER_ID, List.of(saleLine));
+        verify(flashSales).reserve(ORDER_ID, "sale", "product-1", 2, saleLine.unitPrice());
+        inventory.release(ORDER_ID, List.of(saleLine));
+        verify(flashSales).release(ORDER_ID, "sale", "product-1", 2);
+    }
+
+    @Test
+    void sameSaleProductAcrossVariantsUsesOneAggregatedQuotaReservation() {
+        var first = new InventoryService.Line("product-1", "M", "Đen", 1,
+                "sale", java.math.BigDecimal.valueOf(399_000));
+        var second = new InventoryService.Line("product-1", "L", "Đen", 2,
+                "sale", java.math.BigDecimal.valueOf(399_000));
+        InventoryVariant stock = new InventoryVariant("sku", "product-1", "M", "Đen", 5, Map.of());
+        when(mongo.findById(anyString(), eq(InventoryVariant.class))).thenReturn(stock);
+        when(mongo.findAndModify(any(Query.class), any(Update.class), eq(InventoryVariant.class)))
+                .thenReturn(stock);
+
+        inventory.reserve(ORDER_ID, List.of(first, second));
+        verify(flashSales).reserve(ORDER_ID, "sale", "product-1", 3, first.unitPrice());
+        inventory.release(ORDER_ID, List.of(first, second));
+        verify(flashSales).release(ORDER_ID, "sale", "product-1", 3);
+    }
+
+    @Test
     void insufficientStockReturnsConflictAndReleasesPartialReservation() {
         when(mongo.findById(anyString(), eq(InventoryVariant.class))).thenReturn(
                 new InventoryVariant("sku", "product-1", "M", "Đen", 0, Map.of()));
@@ -81,5 +117,33 @@ class InventoryServiceTest {
                 .isInstanceOf(IllegalArgumentException.class);
         verify(mongo).updateFirst(any(Query.class), any(Update.class), eq(InventoryVariant.class));
         verify(mongo, never()).findAndModify(any(Query.class), any(Update.class), eq(InventoryVariant.class));
+    }
+
+    @Test
+    void finalizingReservationRemovesHoldWithoutRestoringAvailableStock() {
+        when(mongo.updateFirst(any(Query.class), any(Update.class), eq(InventoryVariant.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
+        inventory.finalizeReservation(ORDER_ID, List.of(line));
+
+        var query = org.mockito.ArgumentCaptor.forClass(Query.class);
+        var update = org.mockito.ArgumentCaptor.forClass(Update.class);
+        verify(mongo).updateFirst(query.capture(), update.capture(), eq(InventoryVariant.class));
+        assertThat(query.getValue().getQueryObject().toJson()).contains("reservations." + ORDER_ID);
+        assertThat(update.getValue().getUpdateObject().toJson()).contains("$unset", "reservations." + ORDER_ID)
+                .doesNotContain("$inc", "available");
+    }
+
+    @Test
+    void finalizingAgainIsIdempotentButRejectsMismatchedQuantity() {
+        when(mongo.updateFirst(any(Query.class), any(Update.class), eq(InventoryVariant.class)))
+                .thenReturn(UpdateResult.acknowledged(0, 0L, null));
+        when(mongo.findById(anyString(), eq(InventoryVariant.class))).thenReturn(
+                new InventoryVariant("sku", "product-1", "M", "Đen", 3, Map.of()),
+                new InventoryVariant("sku", "product-1", "M", "Đen", 3, Map.of(ORDER_ID, 1)));
+
+        inventory.finalizeReservation(ORDER_ID, List.of(line));
+        assertThatThrownBy(() -> inventory.finalizeReservation(ORDER_ID, List.of(line)))
+                .isInstanceOf(ConflictException.class);
     }
 }

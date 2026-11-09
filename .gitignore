@@ -39,3 +39,7 @@ out/
 ### Local secrets ###
 .env
 **/.env
+
+# Local MongoDB migration snapshots (may contain user data)
+/.local-db-backups/
+/.local-runtime/

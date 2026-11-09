@@ -1,6 +1,7 @@
 package com.neora.catalog.inventory;
 
 import com.neora.catalog.model.Product;
+import com.neora.catalog.flashsale.FlashSaleAllocationService;
 import com.neora.catalog.repository.ProductRepository;
 import com.neora.shared.error.ConflictException;
 import com.neora.shared.error.NotFoundException;
@@ -22,10 +23,12 @@ import java.util.Map;
 public class InventoryService {
     private final MongoTemplate mongo;
     private final ProductRepository products;
+    private final FlashSaleAllocationService flashSales;
 
-    public InventoryService(MongoTemplate mongo, ProductRepository products) {
+    public InventoryService(MongoTemplate mongo, ProductRepository products, FlashSaleAllocationService flashSales) {
         this.mongo = mongo;
         this.products = products;
+        this.flashSales = flashSales;
     }
 
     public Availability availability(String productId, String size, String color) {
@@ -37,9 +40,13 @@ public class InventoryService {
     public void reserve(String orderId, List<Line> requested) {
         validateOrderId(orderId);
         List<Line> lines = normalize(requested);
+        List<SaleLine> sales = saleLines(lines);
         try {
             for (Line line : lines) validateVariant(line.productId(), line.size(), line.color());
             for (Line line : lines) reserveLine(orderId, line);
+            for (SaleLine sale : sales) {
+                flashSales.reserve(orderId, sale.campaignId(), sale.productId(), sale.quantity(), sale.unitPrice());
+            }
         } catch (RuntimeException failed) {
             try {
                 release(orderId, lines);
@@ -53,11 +60,40 @@ public class InventoryService {
 
     public void release(String orderId, List<Line> requested) {
         validateOrderId(orderId);
-        for (Line line : normalize(requested)) {
+        List<Line> lines = normalize(requested);
+        List<SaleLine> sales = saleLines(lines);
+        for (Line line : lines) {
             String field = "reservations." + orderId;
             mongo.updateFirst(Query.query(Criteria.where("_id").is(variantId(line.productId(), line.size(), line.color()))
                             .and(field).is(line.quantity())),
                     new Update().inc("available", line.quantity()).unset(field), InventoryVariant.class);
+        }
+        for (SaleLine sale : sales) {
+            flashSales.release(orderId, sale.campaignId(), sale.productId(), sale.quantity());
+        }
+    }
+
+    public void finalizeReservation(String orderId, List<Line> requested) {
+        validateOrderId(orderId);
+        List<Line> lines = normalize(requested);
+        List<SaleLine> sales = saleLines(lines);
+        for (Line line : lines) {
+            String id = variantId(line.productId(), line.size(), line.color());
+            String field = "reservations." + orderId;
+            var result = mongo.updateFirst(Query.query(Criteria.where("_id").is(id)
+                            .and(field).is(line.quantity())),
+                    new Update().unset(field), InventoryVariant.class);
+            if (result.getModifiedCount() == 0) {
+                InventoryVariant stock = mongo.findById(id, InventoryVariant.class);
+                if (stock == null) throw new NotFoundException("Không tìm thấy tồn kho của biến thể sản phẩm");
+                if (stock.reservations() != null
+                        && stock.reservations().containsKey(orderId)) {
+                    throw new ConflictException("Số lượng hàng đã giữ không khớp với đơn hàng");
+                }
+            }
+        }
+        for (SaleLine sale : sales) {
+            flashSales.finalizeReservation(orderId, sale.campaignId(), sale.productId(), sale.quantity());
         }
     }
 
@@ -94,9 +130,32 @@ public class InventoryService {
             }
             String id = variantId(line.productId(), line.size(), line.color());
             Line existing = merged.get(id);
+            if (existing != null && (!java.util.Objects.equals(existing.flashSaleId(), line.flashSaleId())
+                    || !java.util.Objects.equals(existing.unitPrice(), line.unitPrice()))) {
+                throw new IllegalArgumentException("Giá hoặc chương trình Flash Sale không nhất quán");
+            }
+            if (line.flashSaleId() != null && (line.flashSaleId().isBlank() || line.unitPrice() == null)) {
+                throw new IllegalArgumentException("Thông tin Flash Sale không hợp lệ");
+            }
             int quantity = existing == null ? line.quantity() : existing.quantity() + line.quantity();
             if (quantity > 99) throw new IllegalArgumentException("Số lượng sản phẩm vượt quá 99");
-            merged.put(id, new Line(line.productId(), line.size(), line.color(), quantity));
+            merged.put(id, new Line(line.productId(), line.size(), line.color(), quantity,
+                    line.flashSaleId(), line.unitPrice()));
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private List<SaleLine> saleLines(List<Line> lines) {
+        Map<String, SaleLine> merged = new java.util.LinkedHashMap<>();
+        for (Line line : lines) {
+            if (line.flashSaleId() == null) continue;
+            String key = line.flashSaleId() + "\u0000" + line.productId();
+            SaleLine existing = merged.get(key);
+            if (existing != null && existing.unitPrice().compareTo(line.unitPrice()) != 0) {
+                throw new IllegalArgumentException("Giá Flash Sale không nhất quán trong đơn hàng");
+            }
+            merged.put(key, new SaleLine(line.flashSaleId(), line.productId(),
+                    line.quantity() + (existing == null ? 0 : existing.quantity()), line.unitPrice()));
         }
         return new ArrayList<>(merged.values());
     }
@@ -125,6 +184,13 @@ public class InventoryService {
         }
     }
 
-    public record Line(String productId, String size, String color, int quantity) {}
+    public record Line(String productId, String size, String color, int quantity,
+                       String flashSaleId, java.math.BigDecimal unitPrice) {
+        public Line(String productId, String size, String color, int quantity) {
+            this(productId, size, color, quantity, null, null);
+        }
+    }
     public record Availability(String productId, String size, String color, int available) {}
+    private record SaleLine(String campaignId, String productId, int quantity,
+                            java.math.BigDecimal unitPrice) {}
 }

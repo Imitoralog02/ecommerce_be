@@ -3,6 +3,24 @@ plugins {
 	id 'io.spring.dependency-management' version '1.1.7' apply false
 }
 
+// Apply local development settings to Spring Boot processes started by Gradle.
+def localEnv = [:]
+def envFile = file('.env')
+if (envFile.isFile()) {
+	envFile.eachLine('UTF-8') { line ->
+		def entry = line.trim()
+		if (entry && !entry.startsWith('#')) {
+			def separator = entry.indexOf('=')
+			if (separator > 0) {
+				def name = entry.substring(0, separator).trim()
+				if (name ==~ /[A-Za-z_][A-Za-z0-9_]*/) {
+					localEnv[name] = entry.substring(separator + 1).trim()
+				}
+			}
+		}
+	}
+}
+
 allprojects {
 	group = 'com.neora'
 	version = '0.1.0-SNAPSHOT'
@@ -10,6 +28,15 @@ allprojects {
 }
 
 subprojects {
+	plugins.withId('org.springframework.boot') {
+		tasks.named('bootRun') {
+			localEnv.each { name, value ->
+				if (!System.getenv().containsKey(name)) {
+					environment name, value
+				}
+			}
+		}
+	}
 	plugins.withId('java') {
 		java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 		tasks.withType(Test).configureEach { useJUnitPlatform() }

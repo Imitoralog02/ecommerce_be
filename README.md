@@ -69,18 +69,53 @@ Khi người dùng tạo đơn hàng:
 5. Các sản phẩm đã đặt chỉ được xóa khỏi giỏ sau khi giữ hàng thành công.
 6. Order Service phát `ORDER_CREATED` lên Kafka topic `order.lifecycle.v1`.
 7. Notification Service xử lý event và lưu thông báo.
+8. Khi đơn chuyển sang `DELIVERED`, worker chốt reservation: bỏ dấu giữ hàng mà không cộng lại số lượng có thể bán. Nếu Catalog tạm thời lỗi, worker thử lại. `inventoryState=FINALIZED` cho biết đã chốt xong.
 
 Các lỗi mạng được thử lại. Kafka event sử dụng event ID cố định để Notification Service có thể bỏ qua event được phát lại.
 
 ## Chạy Local
 
-### 1. Khởi động MongoDB, Redis và Kafka
+### 1. Khởi động MongoDB, Redis, Kafka và Mailpit
 
 ```powershell
 docker compose up -d --wait
 ```
 
+MongoDB chạy trong Docker và chỉ mở trên máy local tại `127.0.0.1:27018`
+(cổng `27017` bên trong container). MongoDB Compass là công cụ xem/chỉnh dữ liệu,
+không phải database server. Kết nối Compass bằng `mongodb://127.0.0.1:27018`;
+không dùng `27017` nếu máy còn một MongoDB Windows riêng.
+Mailpit nhận email khôi phục ở SMTP `127.0.0.1:1025`; mở
+`http://127.0.0.1:8025` để xem mã gửi đến trong môi trường local. Mailpit chỉ
+giữ email thử nghiệm; khi triển khai thật cần cấu hình SMTP qua `MAIL_HOST`,
+`MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_SMTP_AUTH` và
+`MAIL_SMTP_STARTTLS`.
+Compass có thể thêm/sửa/xóa document trực tiếp trong môi trường phát triển, nhưng
+thao tác đó bỏ qua kiểm tra nghiệp vụ của API và cache Redis; đặc biệt không sửa
+đơn hàng hoặc tồn kho đang giữ hàng nếu chưa kiểm tra các bản ghi liên quan.
+
+Trong `ecommerce_catalog`, Compass hiển thị `flash_sales` (chiến dịch và từng
+offer với `quota`) và `flash_sale_allocations` (lượt sale thực tế theo sản phẩm).
+Mỗi allocation có `capacity`, `available`, `reservations`; một đơn mới được
+xác nhận sẽ giảm `available`, hủy đơn sẽ hoàn lượt, giao xong sẽ xóa dấu giữ
+nhưng không hoàn lượt. Đừng chỉ sửa `flash_sales.offers.quota` để đặt lại lượt
+của chiến dịch đã bắt đầu, vì allocation đã tạo không tự thay đổi.
+
+Tạo `.env` cho lần chạy đầu, rồi đặt `JWT_SECRET` và `INTERNAL_API_KEY`
+thành hai giá trị riêng dài ít nhất 32 ký tự. File `.env` được Git bỏ qua:
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
+
 ### 2. Chạy các Microservices
+
+Gradle tự đọc `.env` ở thư mục gốc khi chạy `bootRun` và truyền các biến cho
+service. Biến đã được đặt trong terminal hoặc cấu hình chạy của IDE sẽ được ưu
+tiên. Không cần nạp `.env` thủ công trong từng terminal.
+
+Trong IDE, hãy chạy Gradle task `:tên-service:bootRun`; chạy trực tiếp lớp
+`main` của Spring Boot không sử dụng cấu hình Gradle này.
 
 Chạy mỗi service trong một terminal riêng:
 
@@ -133,6 +168,38 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-api.ps1
 ```
 
 Script chỉ chấp nhận Gateway trên máy local. Nó tạo tài khoản và đơn thử trong database phát triển, kiểm tra đăng nhập/refresh, catalog, wishlist, địa chỉ, giỏ, COD/idempotency, kết thúc key COD chưa có đơn, thông báo Kafka, hủy/hoàn kho và đơn thiếu tồn kho. Đơn COD thành công được hủy sau khi kiểm tra; tài khoản và lịch sử đơn thử vẫn được lưu để đối chiếu.
+
+### Kiểm thử tích hợp tách khỏi dữ liệu demo
+
+Sau khi build JAR và khởi động MongoDB, Redis, Kafka, Mailpit, chạy:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-order-integration.ps1
+```
+
+Script khởi động bảy service tạm trên cổng `8280`–`8286`, dùng năm MongoDB riêng có tiền tố `ecommerce_it_` và một Kafka topic riêng. Nó chạy smoke API, kiểm tra email khôi phục qua Mailpit, rồi kiểm tra luồng `CONFIRMED → PROCESSING → SHIPPED → DELIVERED → FINALIZED`, số lượng tồn kho, khả năng gọi lại finalize và notification Kafka. Tài khoản role `ADMIN` chỉ được tạo trong database kiểm thử để gọi endpoint fulfillment hiện có; đây không phải chức năng quản trị cho app. Script dừng các service tạm sau khi chạy, còn database kiểm thử và log trong `.local-runtime/` được giữ để đối chiếu. Các database `ecommerce_auth`, `ecommerce_catalog`, `ecommerce_order`, `ecommerce_notification`, `ecommerce_customer` không bị thay đổi bởi bộ kiểm thử này.
+
+### Tạo nhiều dữ liệu demo để xem trong Compass
+
+Chỉ chạy sau khi cả bảy service đều `UP` và đã đọc `.env` trỏ tới MongoDB Docker.
+Đặt `DEMO_SEED_PASSWORD` trong `.env` (8–72 ký tự, không commit), rồi chạy:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\seed-demo-data.ps1 -Users 12 -OrdersPerUser 2
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\database-summary.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate-database.ps1
+```
+
+Seed dùng API thật: mỗi batch tạo tài khoản `demo.<batch>.uXX@example.test`,
+hai địa chỉ, ba mục wishlist, đơn COD xác nhận/hủy, một giỏ hàng còn mở cho
+mỗi tài khoản và một đơn bị từ chối vì thiếu tồn kho. `BatchId` tự sinh nên
+chạy lại sẽ tạo **thêm** dữ liệu, không ghi đè tài khoản cũ. Nếu seed lỗi giữa
+chừng, các bản ghi đã tạo vẫn được giữ; dùng batch mới để chạy lại. Không chạy
+script trên dữ liệu production. Giỏ hàng nằm trong Redis, không hiện ở Compass.
+Script từ chối chạy nếu một trong năm service dùng MongoDB không kết nối cổng
+Docker `27018` (ví dụ service cũ vẫn đang dùng MongoDB Windows `27017`).
+Script kiểm tra cuối cùng chỉ đọc dữ liệu và báo lỗi nếu có user/sản phẩm/đơn
+tham chiếu không tồn tại, địa chỉ mặc định sai hoặc reservation tồn kho lệch.
 
 ### Build và test toàn bộ module
 
@@ -408,6 +475,21 @@ Response: HTTP `204 No Content`.
 
 Access token đã phát vẫn hợp lệ cho đến khi hết hạn vì các service tự xác minh JWT.
 
+### Đặt lại mật khẩu
+
+Gọi `POST /api/v1/auth/password-reset/request` với `{"email":"..."}`. API trả
+`204` cho cả email có và không có tài khoản. Nếu tài khoản tồn tại, mã 8 chữ số
+được gửi qua SMTP; chỉ bản băm HMAC nằm trong collection
+`ecommerce_auth.password_reset_challenges`. Mã hết hạn sau 10 phút, một mã chỉ
+dùng một lần, tối đa 5 lần nhập sai và mỗi tài khoản chỉ nhận mã mới sau 1 phút.
+
+Gọi `POST /api/v1/auth/password-reset/confirm` với `email`, `code`,
+`newPassword` (8–72 ký tự, gồm chữ hoa, chữ thường và số). API trả `204` khi
+thành công; mã sai, hết hạn hoặc đã dùng trả `400`. Các refresh token cũ bị
+thu hồi khi mật khẩu đổi. Access token đã phát vẫn hợp lệ tối đa 30 phút theo
+cấu hình JWT hiện tại. Khi phát hành production, đặt `PASSWORD_RESET_SECRET`
+riêng dài ít nhất 32 ký tự và dùng SMTP thật; Mailpit chỉ dùng local.
+
 ### JWT Configuration
 
 Auth Service ký JWT bằng:
@@ -418,7 +500,7 @@ Các service xác minh JWT bằng cùng secret.
 
 Thiết lập biến môi trường từ `.env.example`.
 
-Lưu ý: Gradle `bootRun` không tự động đọc file `.env`.
+Gradle `bootRun` tự đọc file `.env` ở thư mục gốc dự án.
 
 Thay secret phát triển trước khi triển khai production.
 
@@ -438,7 +520,6 @@ Dự án hiện là nền tảng Microservices trong giai đoạn phát triển.
 
 Các hạng mục cần hoàn thiện trước production:
 
-- Hoàn tất reservation khi giao hàng.
 - Kiểm thử đa instance.
 - Integration testing với MongoDB, Redis và Kafka.
 - Transactional Outbox cho Kafka.
@@ -447,7 +528,7 @@ Các hạng mục cần hoàn thiện trước production:
 - Rate Limiting tại Gateway.
 - Secret Management.
 - Thu hồi access token tức thời nếu nghiệp vụ yêu cầu.
-- API quên và đặt lại mật khẩu.
-- Dịch vụ gửi email thực tế.
+- SMTP gửi email production và giám sát giao hàng email.
 
-Không kết nối chức năng quên mật khẩu của Flutter với API giả khi backend chưa hỗ trợ.
+Flutter chế độ API thật dùng luồng email → mã khôi phục → mật khẩu mới; chế độ
+demo dùng mã thử `12345678` và được ghi rõ trên màn hình.

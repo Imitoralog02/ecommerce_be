@@ -12,7 +12,7 @@ public record CartResponse(
         BigDecimal total
 ) {
     public record Product(String id, String title, BigDecimal price, List<String> availableSizes,
-                          List<String> colorNames, String imagePath) {}
+                          List<String> colorNames, String imagePath, String flashSaleId) {}
     public record Item(String id, Product product, String selectedSize, String selectedColor,
                        int quantity, BigDecimal totalPrice) {}
 }

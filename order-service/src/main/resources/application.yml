@@ -3,6 +3,9 @@ spring:
     name: order-service
   mongodb:
     uri: ${ORDER_MONGODB_URI:mongodb://localhost:27017/ecommerce_order}
+  data:
+    mongodb:
+      auto-index-creation: true
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
@@ -17,6 +20,9 @@ services:
   cart-url: ${CART_URL:http://localhost:8083}
   catalog-url: ${CATALOG_URL:http://localhost:8082}
 app:
+  promotion:
+    seed-demo: ${PROMOTION_DEMO_SEED:true}
+    reconcile-ms: ${PROMOTION_RECONCILE_MS:30000}
   internal-api-key: ${INTERNAL_API_KEY:change-this-development-internal-key-32-chars}
   inventory:
     poll-ms: ${ORDER_INVENTORY_POLL_MS:5000}

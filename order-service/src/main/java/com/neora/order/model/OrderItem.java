@@ -11,5 +11,13 @@ public record OrderItem(
         String selectedColor,
         int quantity,
         BigDecimal unitPrice,
-        BigDecimal subtotal
-) {}
+        BigDecimal subtotal,
+        String flashSaleId
+) {
+    public OrderItem(String cartItemId, String productId, String title, String imagePath,
+                     String selectedSize, String selectedColor, int quantity,
+                     BigDecimal unitPrice, BigDecimal subtotal) {
+        this(cartItemId, productId, title, imagePath, selectedSize, selectedColor,
+                quantity, unitPrice, subtotal, null);
+    }
+}

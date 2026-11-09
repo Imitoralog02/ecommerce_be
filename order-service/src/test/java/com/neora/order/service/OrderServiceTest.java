@@ -3,6 +3,9 @@ package com.neora.order.service;
 import com.neora.order.dto.CreateOrderRequest;
 import com.neora.order.model.Order;
 import com.neora.order.repository.OrderRepository;
+import com.neora.order.promotion.PromotionRepository;
+import com.neora.order.promotion.PromotionService;
+import com.neora.order.promotion.Promotion;
 import com.neora.shared.error.ConflictException;
 import com.neora.shared.error.NotFoundException;
 import org.junit.jupiter.api.Test;
@@ -28,6 +31,31 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 @ExtendWith(MockitoExtension.class)
 class OrderServiceTest {
     @Mock OrderRepository orders;
+
+    @Test
+    void quotedCouponDiscountIsSavedWithTheOrder() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        PromotionRepository promotions = mock(PromotionRepository.class);
+        when(promotions.findById("NEORA10")).thenReturn(Optional.of(new Promotion("NEORA10", "Giảm 10%",
+                Promotion.DiscountType.PERCENT, java.math.BigDecimal.TEN,
+                java.math.BigDecimal.valueOf(200_000), null, null, null, true)));
+        OrderService service = new OrderService(orders, builder, "http://cart", new PromotionService(promotions));
+        CreateOrderRequest request = new CreateOrderRequest("EXPRESS", "CASH_ON_DELIVERY", "Nguyễn An",
+                "0908123456", "12 Nguyễn Huệ", " neora10 ",
+                java.util.List.of(new CreateOrderRequest.ExpectedCartItem("cart-1", 1)));
+        when(orders.findById(any())).thenReturn(Optional.empty());
+        when(orders.insert(any(Order.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        server.expect(requestTo("http://cart/api/v1/cart")).andRespond(withSuccess("""
+                {"items":[{"id":"cart-1","product":{"id":"prod_dress_wrap","title":"Đầm hoa wrap","price":459000,"imagePath":"dress.jpg"},"selectedSize":"M","selectedColor":"Kem Be","quantity":1,"totalPrice":459000}]}
+                """, MediaType.APPLICATION_JSON));
+
+        var result = service.create("user-1", "jwt", "checkout-12345678", request);
+        assertThat(result.discount()).isEqualByComparingTo("45900");
+        assertThat(result.total()).isEqualByComparingTo("443100");
+        assertThat(result.couponCode()).isEqualTo("NEORA10");
+        server.verify();
+    }
 
     @Test
     void repeatedRequestReturnsSavedOrderWithoutReadingCartAgain() {

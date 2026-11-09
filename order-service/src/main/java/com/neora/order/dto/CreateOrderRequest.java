@@ -14,7 +14,7 @@ public record CreateOrderRequest(
         @NotBlank String recipientName,
         @NotBlank @Pattern(regexp = "^[0-9+ .()-]{8,20}$") String phone,
         @NotBlank @Size(max = 300) String addressLine,
-        String couponCode,
+        @Size(max = 32) String couponCode,
         List<@Valid ExpectedCartItem> expectedCartItems
 ) {
     public record ExpectedCartItem(@NotBlank String id, @Min(1) int quantity) {}

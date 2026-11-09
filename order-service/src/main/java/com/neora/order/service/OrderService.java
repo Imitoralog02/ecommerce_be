@@ -10,12 +10,14 @@ import com.neora.order.model.OrderItem;
 import com.neora.order.model.OrderStatus;
 import com.neora.order.model.InventoryState;
 import com.neora.order.repository.OrderRepository;
+import com.neora.order.promotion.PromotionService;
 import com.neora.shared.error.NotFoundException;
 import com.neora.shared.error.ConflictException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
@@ -26,15 +28,23 @@ import java.util.List;
 public class OrderService {
     private final OrderRepository orders;
     private final RestClient cart;
+    private final PromotionService promotions;
 
+    @Autowired
     public OrderService(OrderRepository orders, RestClient.Builder builder,
-                        @Value("${services.cart-url:http://localhost:8083}") String cartUrl) {
+                        @Value("${services.cart-url:http://localhost:8083}") String cartUrl,
+                        PromotionService promotions) {
         this.orders = orders;
         this.cart = builder.baseUrl(cartUrl).build();
+        this.promotions = promotions;
     }
 
-    public OrderQuoteResponse quote(String token, OrderQuoteRequest request) {
-        return OrderPricing.quote(subtotal(loadCart(token)), request.shippingType(), request.couponCode());
+    public OrderService(OrderRepository orders, RestClient.Builder builder, String cartUrl) {
+        this(orders, builder, cartUrl, null);
+    }
+
+    public OrderQuoteResponse quote(String userId, String token, OrderQuoteRequest request) {
+        return quote(userId, subtotal(loadCart(token)), request.shippingType(), request.couponCode());
     }
 
     public OrderResponse create(String userId, String token, String idempotencyKey, CreateOrderRequest request) {
@@ -45,10 +55,11 @@ public class OrderService {
 
         CartResponse cartResponse = loadCart(token);
         verifyExpectedCart(request, cartResponse);
-        OrderQuoteResponse quote = OrderPricing.quote(subtotal(cartResponse), request.shippingType(), request.couponCode());
+        OrderQuoteResponse quote = quote(userId, subtotal(cartResponse), request.shippingType(), request.couponCode());
+        boolean claimed = promotions != null && promotions.claim(userId, orderId, request.couponCode());
         List<OrderItem> items = cartResponse.items().stream().map(item -> new OrderItem(item.id(), item.product().id(),
                 item.product().title(), item.product().imagePath(), item.selectedSize(), item.selectedColor(),
-                item.quantity(), item.product().price(), item.totalPrice())).toList();
+                item.quantity(), item.product().price(), item.totalPrice(), item.product().flashSaleId())).toList();
         Instant now = Instant.now();
         Order order;
         try {
@@ -57,10 +68,17 @@ public class OrderService {
                     quote.shippingFee(), quote.discount(), quote.total(),
                     OrderPricing.shippingType(request.shippingType()), OrderPricing.paymentType(request.paymentType()),
                     request.recipientName().trim(), request.phone().trim(), request.addressLine().trim(),
-                    fingerprint, null, null, null, null, now, now));
+                    fingerprint, null, null, null, null, null, null, null, now, now,
+                    request.couponCode() == null || request.couponCode().isBlank() ? null :
+                            request.couponCode().trim().toUpperCase(java.util.Locale.ROOT)));
         } catch (DuplicateKeyException duplicate) {
             Order saved = orders.findById(orderId).orElseThrow(() -> duplicate);
             return repeatedRequest(saved, userId, fingerprint);
+        } catch (RuntimeException failure) {
+            if (claimed && orders.findById(orderId).isEmpty()) {
+                promotions.release(userId, orderId, request.couponCode());
+            }
+            throw failure;
         }
         return OrderResponse.from(order);
     }
@@ -144,7 +162,12 @@ public class OrderService {
         }).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
-    private record Product(String id, String title, BigDecimal price, String imagePath) {}
+    private OrderQuoteResponse quote(String userId, BigDecimal subtotal, String shippingType, String couponCode) {
+        return promotions == null ? OrderPricing.quote(subtotal, shippingType, couponCode)
+                : promotions.quote(userId, subtotal, shippingType, couponCode);
+    }
+
+    private record Product(String id, String title, BigDecimal price, String imagePath, String flashSaleId) {}
     private record CartItem(String id, Product product, String selectedSize, String selectedColor,
                             int quantity, BigDecimal totalPrice) {}
     private record CartResponse(List<CartItem> items, BigDecimal subtotal, BigDecimal discount) {}

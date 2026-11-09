@@ -69,6 +69,27 @@ class OrderEventPublisherTest {
     }
 
     @Test
+    void finalizedOrderStillPublishesCreationEvent() {
+        Instant now = Instant.parse("2026-10-21T00:00:00Z");
+        Order order = new Order("ord_123", "user-1", OrderStatus.DELIVERED, InventoryState.FINALIZED, List.of(),
+                BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ONE,
+                "STANDARD", "CASH_ON_DELIVERY", "Nguyễn An", "0908123456", "12 Nguyễn Huệ",
+                "fingerprint", null, null, null, null, now, now);
+        when(orders.findTop100ByInventoryStateAndEventPublishedAtIsNullOrderByCreatedAtAsc(InventoryState.RESERVED))
+                .thenReturn(List.of());
+        when(orders.findTop100ByInventoryStateAndEventPublishedAtIsNullOrderByCreatedAtAsc(InventoryState.FINALIZED))
+                .thenReturn(List.of(order));
+        when(kafka.send(anyString(), anyString(), any(OrderEvent.class)))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        new OrderEventPublisher(kafka, orders, mongo, "order.lifecycle.v1").publishPending();
+
+        ArgumentCaptor<OrderEvent> event = ArgumentCaptor.forClass(OrderEvent.class);
+        verify(kafka, atLeastOnce()).send(eq("order.lifecycle.v1"), eq("ord_123"), event.capture());
+        assertThat(event.getAllValues()).anyMatch(item -> item.eventId().equals("ORDER_CREATED:ord_123"));
+    }
+
+    @Test
     void processingOrderPublishesFulfillmentEvent() {
         Instant now = Instant.parse("2026-10-21T00:00:00Z");
         Order order = new Order("ord_123", "user-1", OrderStatus.PROCESSING, InventoryState.RESERVED, List.of(),

@@ -45,6 +45,14 @@ public class InventoryController {
         inventory.release(orderId, request.lines());
     }
 
+    @PostMapping("/internal/inventory/reservations/{orderId}/finalize")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void finalizeReservation(@RequestHeader(value = "X-Internal-Api-Key", required = false) String key,
+                                    @PathVariable String orderId, @Valid @RequestBody LinesRequest request) {
+        authorize(key);
+        inventory.finalizeReservation(orderId, request.lines());
+    }
+
     private void authorize(String key) {
         if (key == null || !MessageDigest.isEqual(internalKey, key.getBytes(StandardCharsets.UTF_8))) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Invalid internal API key");

@@ -72,9 +72,10 @@ public class AuthHeaderFilter extends OncePerRequestFilter {
 
     private String route(String path) {
         if (matches(path, "/api/v1/auth") || path.equals("/api/v1/me")) return auth;
-        if (matches(path, "/api/v1/products") || matches(path, "/api/v1/categories")) return catalog;
+        if (matches(path, "/api/v1/products") || matches(path, "/api/v1/categories")
+                || matches(path, "/api/v1/flash-sales")) return catalog;
         if (matches(path, "/api/v1/cart")) return cart;
-        if (matches(path, "/api/v1/orders")) return order;
+        if (matches(path, "/api/v1/admin/orders") || matches(path, "/api/v1/orders") || matches(path, "/api/v1/promotions")) return order;
         if (matches(path, "/api/v1/notifications")) return notification;
         if (matches(path, "/api/v1/addresses") || matches(path, "/api/v1/wishlist")) return customer;
         throw new IllegalArgumentException("Unknown route");

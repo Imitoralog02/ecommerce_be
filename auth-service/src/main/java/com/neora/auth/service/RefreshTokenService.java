@@ -60,6 +60,11 @@ public class RefreshTokenService {
                 new Update().set("revokedAt", Instant.now()), RefreshSession.class);
     }
 
+    public void revokeAll(String userId) {
+        mongo.updateMulti(Query.query(Criteria.where("userId").is(userId).and("revokedAt").is(null)),
+                new Update().set("revokedAt", Instant.now()), RefreshSession.class);
+    }
+
     private String validHash(String token) {
         if (token == null || !token.matches("[A-Za-z0-9_-]{43}")) {
             throw new BadCredentialsException("invalid refresh token");

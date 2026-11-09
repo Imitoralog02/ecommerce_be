@@ -222,6 +222,70 @@ class OrderInventoryWorkerTest {
         server.verify();
     }
 
+    @Test
+    void deliveredOrderFinalizesStock() {
+        OrderRepository orders = mock(OrderRepository.class);
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        Order delivered = order(InventoryState.RESERVED, OrderStatus.DELIVERED);
+        when(orders.findTop100ByStatusAndInventoryStateOrderByCreatedAtAsc(
+                OrderStatus.DELIVERED, InventoryState.RESERVED)).thenReturn(List.of(delivered));
+        server.expect(requestTo("http://catalog/internal/inventory/reservations/" + ID + "/finalize"))
+                .andExpect(method(HttpMethod.POST)).andRespond(withNoContent());
+
+        OrderInventoryWorker worker = new OrderInventoryWorker(orders, mongo, builder,
+                "http://catalog", "http://cart", "secret".repeat(6));
+        worker.reconcile();
+
+        var update = org.mockito.ArgumentCaptor.forClass(Update.class);
+        verify(mongo).updateFirst(any(Query.class), update.capture(), eq(Order.class));
+        assertThat(update.getValue().getUpdateObject().toString()).contains("FINALIZED");
+        server.verify();
+    }
+
+    @Test
+    void finalizedOrderCanStillClearPurchasedCartItems() {
+        OrderRepository orders = mock(OrderRepository.class);
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        when(orders.findTop100ByInventoryStateAndCartClearedAtIsNullOrderByCreatedAtAsc(InventoryState.FINALIZED))
+                .thenReturn(List.of(order(InventoryState.FINALIZED, OrderStatus.DELIVERED)));
+        server.expect(requestTo("http://cart/internal/cart/consume/user-1"))
+                .andExpect(method(HttpMethod.POST)).andRespond(withNoContent());
+
+        new OrderInventoryWorker(orders, mongo, builder,
+                "http://catalog", "http://cart", "secret".repeat(6)).reconcile();
+
+        var update = org.mockito.ArgumentCaptor.forClass(Update.class);
+        var query = org.mockito.ArgumentCaptor.forClass(Query.class);
+        verify(mongo).updateFirst(query.capture(), update.capture(), eq(Order.class));
+        assertThat(update.getValue().getUpdateObject().toString()).contains("cartClearedAt");
+        assertThat(query.getValue().getQueryObject().get("inventoryState"))
+                .isEqualTo(new org.bson.Document("$in", List.of(InventoryState.RESERVED, InventoryState.FINALIZED)));
+        server.verify();
+    }
+
+    @Test
+    void catalogOutageLeavesDeliveredReservationForRetry() {
+        OrderRepository orders = mock(OrderRepository.class);
+        MongoTemplate mongo = mock(MongoTemplate.class);
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        when(orders.findTop100ByStatusAndInventoryStateOrderByCreatedAtAsc(
+                OrderStatus.DELIVERED, InventoryState.RESERVED))
+                .thenReturn(List.of(order(InventoryState.RESERVED, OrderStatus.DELIVERED)));
+        server.expect(requestTo("http://catalog/internal/inventory/reservations/" + ID + "/finalize"))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+        new OrderInventoryWorker(orders, mongo, builder,
+                "http://catalog", "http://cart", "secret".repeat(6)).reconcile();
+
+        verifyNoInteractions(mongo);
+        server.verify();
+    }
+
     private Order order(InventoryState state, OrderStatus status) {
         Instant now = Instant.now();
         OrderItem item = new OrderItem("cart-1", "product-1", "Đầm", "dress.jpg", "M", "Đen",

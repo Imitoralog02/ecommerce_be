@@ -1,5 +1,7 @@
 ﻿param(
-    [string]$BaseUrl = 'http://localhost:8080/api/v1'
+    [string]$BaseUrl = 'http://localhost:8080/api/v1',
+    [switch]$CheckDemoPromotion,
+    [switch]$CheckDemoFlashSale
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,10 +58,22 @@ Write-Output 'PASS auth: register, login, refresh, profile'
 
 $catalog = Invoke-Api GET '/products?page=0&size=20' $null
 Assert-True (@($catalog.content).Count -gt 0) 'Catalog không có sản phẩm.'
+$saleProduct = $null
+if ($CheckDemoFlashSale) {
+    $campaigns = @(Invoke-Api GET '/flash-sales/active' $null)
+    Assert-True (@($campaigns).Count -gt 0) 'Không có chiến dịch flash sale đang hoạt động.'
+    $saleProduct = $campaigns[0].products[0]
+    Assert-True ([decimal]$saleProduct.price -lt [decimal]$saleProduct.originalPrice) 'Giá flash sale không thấp hơn giá gốc.'
+    $catalogSale = Invoke-Api GET ('/products/' + $saleProduct.id) $null
+    Assert-True ([decimal]$catalogSale.price -eq [decimal]$saleProduct.price) 'Giá chiến dịch khác giá catalog.'
+    Assert-True ($saleProduct.flashSaleId -eq $campaigns[0].id -and [int]$saleProduct.flashSaleRemaining -gt 0) 'Flash Sale không trả hạn mức còn lại.'
+    $startingSaleRemaining = [int]$saleProduct.flashSaleRemaining
+    Write-Output 'PASS flash sale: campaign, active product price'
+}
 $product = $null
 $size = $null
 $color = $null
-foreach ($candidate in $catalog.content) {
+foreach ($candidate in $(if ($null -ne $saleProduct) { @($saleProduct) } else { $catalog.content })) {
     if (@($candidate.availableSizes).Count -eq 0 -or @($candidate.colorNames).Count -eq 0) { continue }
     $candidateSize = $candidate.availableSizes[0]
     $candidateColor = $candidate.colorNames[0]
@@ -108,9 +122,34 @@ $cart = Invoke-Api POST '/cart/items' @{
 Assert-True (@($cart.items).Count -eq 1) 'Thêm giỏ hàng thất bại.'
 $cart = Invoke-Api GET '/cart' $null $auth
 Assert-True ($cart.items[0].product.id -eq $product.id) 'Giỏ hàng không được lưu.'
+if ($CheckDemoFlashSale) {
+    Assert-True ([decimal]$cart.items[0].product.price -eq [decimal]$saleProduct.price) 'Giỏ hàng không dùng giá flash sale.'
+}
 $quote = Invoke-Api POST '/orders/quote' @{ shippingType = 'STANDARD' } $auth
 Assert-True ([decimal]$quote.total -eq [decimal]$cart.subtotal) 'Báo giá COD không khớp tổng giỏ hàng.'
 Write-Output 'PASS cart and quote: add, list, server price'
+
+if ($CheckDemoPromotion) {
+    $offers = Invoke-Api GET '/promotions' $null $auth
+    $offer = $offers | Where-Object code -eq 'NEORA10' | Select-Object -First 1
+    Assert-True ($null -ne $offer -and $offer.available -and $offer.remainingUses -eq 1) 'Danh sách voucher không trả lượt dùng ban đầu.'
+    $promotionQuote = Invoke-Api POST '/orders/quote' @{
+        shippingType = 'EXPRESS'
+        couponCode = 'neora10'
+    } $auth
+    $expectedDiscount = [decimal]::Min(
+        [decimal]::Round([decimal]$cart.subtotal * 0.10, 0, [System.MidpointRounding]::AwayFromZero),
+        [decimal]100000)
+    Assert-True ([decimal]$promotionQuote.discount -eq $expectedDiscount) 'Báo giá mã NEORA10 không đúng.'
+    Assert-True ([decimal]$promotionQuote.total -eq ([decimal]$cart.subtotal + 30000 - $expectedDiscount)) 'Tổng sau mã ưu đãi không đúng.'
+    try {
+        Invoke-Api POST '/orders/quote' @{ shippingType = 'EXPRESS'; couponCode = 'NO_SUCH_CODE' } $auth | Out-Null
+        throw 'Mã ưu đãi không tồn tại vẫn được chấp nhận.'
+    } catch {
+        if ([int]$_.Exception.Response.StatusCode -ne 400) { throw }
+    }
+    Write-Output 'PASS promotion quote: discount and invalid code'
+}
 
 $key = [guid]::NewGuid().ToString()
 $orderHeaders = @{ Authorization = $auth.Authorization; 'Idempotency-Key' = $key }
@@ -121,6 +160,10 @@ $orderBody = @{
     phone = $address.phoneNumber
     addressLine = '1 Duong Thu Nghiem, Phuong 1, Quan 1, Ho Chi Minh'
     expectedCartItems = @(@{ id = $cart.items[0].id; quantity = 1 })
+}
+if ($CheckDemoPromotion) {
+    $orderBody.shippingType = 'EXPRESS'
+    $orderBody.couponCode = 'NEORA10'
 }
 $mismatchBody = $orderBody.Clone()
 $mismatchBody.expectedCartItems = @(@{ id = $cart.items[0].id; quantity = 2 })
@@ -149,6 +192,23 @@ try {
 Write-Output 'PASS checkout recovery: abandoned key blocks late POST'
 $order = Invoke-Api POST '/orders' $orderBody $orderHeaders
 Assert-True (-not [string]::IsNullOrWhiteSpace($order.id)) 'Tạo đơn không trả ID.'
+if ($CheckDemoFlashSale) {
+    Assert-True ([decimal]$order.subtotal -eq [decimal]$saleProduct.price) 'Đơn hàng không dùng giá flash sale.'
+}
+if ($CheckDemoPromotion) {
+    Assert-True ($order.couponCode -eq 'NEORA10') 'Đơn hàng không lưu mã ưu đãi.'
+    Assert-True ([decimal]$order.discount -eq $expectedDiscount) 'Đơn hàng không lưu mức giảm giá server.'
+    $usedOffers = Invoke-Api GET '/promotions' $null $auth
+    $usedOffer = $usedOffers | Where-Object code -eq 'NEORA10' | Select-Object -First 1
+    Assert-True (-not $usedOffer.available -and $usedOffer.remainingUses -eq 0) 'Voucher chưa trừ lượt dùng sau tạo đơn.'
+    try {
+        Invoke-Api POST '/orders/quote' @{ shippingType = 'EXPRESS'; couponCode = 'NEORA10' } $auth | Out-Null
+        throw 'Voucher đã dùng vẫn được áp dụng lần nữa.'
+    } catch {
+        if ([int]$_.Exception.Response.StatusCode -ne 409) { throw }
+    }
+    Write-Output 'PASS promotion quota: one use per account'
+}
 try {
 $replayed = Invoke-Api POST '/orders' $orderBody $orderHeaders
 Assert-True ($replayed.id -eq $order.id) 'Idempotency-Key tạo đơn trùng.'
@@ -164,6 +224,11 @@ do {
     Start-Sleep -Seconds 2
 } while ((Get-Date) -lt $deadline)
 Assert-True ($order.status -eq 'CONFIRMED') "Đơn không được xác nhận: $($order.status)/$($order.inventoryState)."
+if ($CheckDemoFlashSale) {
+    Assert-True ($order.items[0].flashSaleId -eq $saleProduct.flashSaleId) 'Đơn hàng không lưu mã Flash Sale.'
+    $saleAfterOrder = Invoke-Api GET ('/products/' + $saleProduct.id) $null
+    Assert-True ([int]$saleAfterOrder.flashSaleRemaining -eq ($startingSaleRemaining - 1)) 'Giữ đơn không trừ hạn mức Flash Sale.'
+}
 $orders = @(Invoke-Api GET '/orders' $null $auth)
 $orderIds = @($orders | ForEach-Object { $_.id })
 Assert-True ($orderIds -contains $order.id) "Đơn $($order.id) không có trong lịch sử: $($orderIds -join ',')."
@@ -200,6 +265,12 @@ Write-Output 'PASS notifications: event, list, mark read'
 }
 Assert-True ($cancelled.status -eq 'CANCELLED') 'Hủy đơn thất bại.'
 Write-Output 'PASS cancellation: confirmed order cancelled'
+if ($CheckDemoPromotion) {
+    $restoredOffers = Invoke-Api GET '/promotions' $null $auth
+    $restoredOffer = $restoredOffers | Where-Object code -eq 'NEORA10' | Select-Object -First 1
+    Assert-True ($restoredOffer.available -and $restoredOffer.remainingUses -eq 1) 'Voucher chưa hoàn lượt sau hủy đơn.'
+    Write-Output 'PASS promotion quota: use restored after cancellation'
+}
 
 $deadline = (Get-Date).AddSeconds(45)
 do {
@@ -210,6 +281,10 @@ do {
 } while ((Get-Date) -lt $deadline)
 Assert-True ($afterCancel.inventoryState -eq 'RELEASED') 'Hủy đơn chưa hoàn tồn kho.'
 Assert-True ([int]$stock.available -ge $startingAvailability) 'Tồn kho không được hoàn sau khi hủy.'
+if ($CheckDemoFlashSale) {
+    $saleAfterCancel = Invoke-Api GET ('/products/' + $saleProduct.id) $null
+    Assert-True ([int]$saleAfterCancel.flashSaleRemaining -eq $startingSaleRemaining) 'Hủy đơn chưa hoàn hạn mức Flash Sale.'
+}
 Write-Output 'PASS inventory reconciliation: stock released'
 
 $tooMany = $startingAvailability + 1
@@ -233,6 +308,21 @@ if ($tooMany -le 99) {
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
     Assert-True ($rejected.status -eq 'CANCELLED' -and $rejected.inventoryState -eq 'REJECTED') 'Đơn vượt tồn kho không bị từ chối.'
+    if ($CheckDemoFlashSale) {
+        $saleAfterRejection = Invoke-Api GET ('/products/' + $saleProduct.id) $null
+        Assert-True ([int]$saleAfterRejection.flashSaleRemaining -eq $startingSaleRemaining) 'Đơn thiếu hàng làm mất hạn mức Flash Sale.'
+    }
+    if ($CheckDemoPromotion) {
+        $quotaDeadline = (Get-Date).AddSeconds(45)
+        do {
+            $quotaOffers = Invoke-Api GET '/promotions' $null $auth
+            $quotaOffer = $quotaOffers | Where-Object code -eq 'NEORA10' | Select-Object -First 1
+            if ($quotaOffer.available -and $quotaOffer.remainingUses -eq 1) { break }
+            Start-Sleep -Seconds 2
+        } while ((Get-Date) -lt $quotaDeadline)
+        Assert-True ($quotaOffer.available -and $quotaOffer.remainingUses -eq 1) 'Voucher chưa hoàn lượt sau khi thiếu hàng.'
+        Write-Output 'PASS promotion quota: use restored after stock rejection'
+    }
     $cart = Invoke-Api GET '/cart' $null $auth
     Assert-True (@($cart.items).Count -eq 1) 'Giỏ hàng bị xóa khi đơn thiếu tồn kho.'
     Invoke-Api DELETE '/cart' $null $auth | Out-Null

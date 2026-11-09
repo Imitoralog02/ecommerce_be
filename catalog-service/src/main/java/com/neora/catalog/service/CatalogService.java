@@ -3,8 +3,8 @@ package com.neora.catalog.service;
 import com.neora.catalog.dto.ProductResponse;
 import com.neora.catalog.model.Product;
 import com.neora.catalog.repository.ProductRepository;
+import com.neora.catalog.flashsale.FlashSaleService;
 import com.neora.shared.error.NotFoundException;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -20,10 +20,12 @@ import java.util.regex.Pattern;
 public class CatalogService {
     private final ProductRepository products;
     private final MongoTemplate mongo;
+    private final FlashSaleService flashSales;
 
-    public CatalogService(ProductRepository products, MongoTemplate mongo) {
+    public CatalogService(ProductRepository products, MongoTemplate mongo, FlashSaleService flashSales) {
         this.products = products;
         this.mongo = mongo;
+        this.flashSales = flashSales;
     }
 
     public PageResponse search(String keyword, String category, int page, int size) {
@@ -40,21 +42,21 @@ public class CatalogService {
         }
         long total = mongo.count(Query.of(query).limit(-1).skip(-1), Product.class);
         query.with(PageRequest.of(safePage, safeSize, Sort.by(Sort.Direction.DESC, "createdAt")));
-        List<ProductResponse> content = mongo.find(query, Product.class).stream().map(ProductResponse::from).toList();
+        List<ProductResponse> content = flashSales.priceAll(mongo.find(query, Product.class));
         return new PageResponse(content, safePage, safeSize, total,
                 total == 0 ? 0 : (int) Math.ceil((double) total / safeSize));
     }
 
-    @Cacheable(cacheNames = "product", key = "#id")
     public ProductResponse get(String id) {
-        return ProductResponse.from(products.findById(id).filter(Product::active)
+        return flashSales.price(products.findById(id).filter(Product::active)
                 .orElseThrow(() -> new NotFoundException("Không tìm thấy sản phẩm")));
     }
 
     public List<ProductResponse> featured(int size) {
-        return products.findByActiveTrueOrderByCreatedAtDesc().stream()
+        List<Product> featured = products.findByActiveTrueOrderByCreatedAtDesc().stream()
                 .sorted((left, right) -> Boolean.compare(right.heroPiece(), left.heroPiece()))
-                .limit(Math.min(20, Math.max(1, size))).map(ProductResponse::from).toList();
+                .limit(Math.min(20, Math.max(1, size))).toList();
+        return flashSales.priceAll(featured);
     }
 
     public List<CategoryResponse> categories() {
